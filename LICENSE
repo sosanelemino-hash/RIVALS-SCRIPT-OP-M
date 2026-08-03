@@ -1,201 +1,1325 @@
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+--  SUITE V9.12 MED - OPSYX
+--  Medium-executor compatibility pass:
+--  - ASCII-only source (no unicode that weak parsers can mangle)
+--  - task library fallback (task.wait / task.spawn -> wait / spawn)
+--  - LocalPlayer / Camera nil guards
+--  - GUI / input / loop init all pcall-wrapped with warn()
+--  - Drawing / mouse / http capabilities stay type()-gated
+--  Xeno-safe: no continue, no table.create, no Math.clamp
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+if _G.__V94OPSYX_LD then return end
+_G.__V94OPSYX_LD = true
 
-   1. Definitions.
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players = game:GetService("Players")
+local RS = game:GetService("RunService")
+local UI = game:GetService("UserInputService")
+local WS = game:GetService("Workspace")
+local CG = game:GetService("CoreGui")
+local H = game:GetService("HttpService")
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+local ME = Players.LocalPlayer
+if not ME then ME = Players.PlayerAdded:Wait() end
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+local CAM = WS.CurrentCamera
+if not CAM then
+    pcall(function() CAM = WS:WaitForChild("Camera", 10) end)
+end
+if not CAM then CAM = workspace.CurrentCamera end
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
+local MOB = UI.TouchEnabled and not UI.KeyboardEnabled
+local RNG = Random.new(tick() * 9999)
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+-- ============================================================
+-- TASK FALLBACK (medium executors may have partial task lib)
+-- ============================================================
+local tw, tsp
+if task and type(task.wait) == "function" then tw = task.wait else tw = wait end
+if task and type(task.spawn) == "function" then tsp = task.spawn else tsp = spawn end
 
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
+-- ============================================================
+-- WEBHOOK (skip-list + failure warn)
+-- ============================================================
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1492871681365246083/kXFsaKbdoqVLrxkxcSejYo5I_wnyWihjTVgEaJ6_lUWsKrPMj3_0To0iawSWuJNEkJB-"
 
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
+-- User IDs that must NOT trigger the Discord webhook
+local WEBHOOK_SKIP_IDS = {
+    [11273358112] = true,
+    [6171833357]  = true,
+    [2847546439]  = true,
+    [10732068344] = true,
+    [9507321038] = true,
+    [5580898759] = true,
+    [10732068344] = true,
+    [11401429842] = true,
+}
 
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
+pcall(function()
 
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
+    if WEBHOOK_SKIP_IDS[ME.UserId] then return end
 
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
+    local MarketplaceService = game:GetService("MarketplaceService")
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+    local gameName = "Unknown"
+    pcall(function()
+        gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
+    end)
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
+    local data = H:JSONEncode({
+        embeds = {{
+            title = "Script Executed",
+            description = "Game: **" .. gameName .. "**" ..
+                          "\nUser: **" .. ME.Name .. "**" ..
+                          "\nUser ID: **" .. ME.UserId .. "**" ..
+                          "\nDisplay Name: **" .. ME.DisplayName .. "**",
+            color = 5814783,
+            footer = {text = "V9.12 MED OPSYX"},
+            timestamp = DateTime.now():ToIsoDate()
+        }}
+    })
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
+    local payload = {
+        Url = WEBHOOK_URL,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = data
+    }
 
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
+    local ok = false
+    if syn and type(syn.request) == "function" then
+        ok = pcall(function() syn.request(payload) end)
+    end
+    if not ok and type(request) == "function" then
+        ok = pcall(function() request(payload) end)
+    end
+    if not ok and type(http_request) == "function" then
+        ok = pcall(function() http_request(payload) end)
+    end
+    if not ok then warn("[OPSYX] Webhook delivery failed (blocked or unreachable)") end
+end)
 
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
+-- ============================================================
+-- CAPABILITIES (one-time check)
+-- ============================================================
+local CAP = {d = false, mr = false, ma = false, c1 = false, cp = false, cr = false}
+pcall(function() CAP.d = type(Drawing) == "table" end)
+pcall(function() CAP.mr = type(mousemoverel) == "function" end)
+pcall(function() CAP.ma = type(mousemoveabs) == "function" end)
+pcall(function() CAP.c1 = type(mouse1click) == "function" end)
+pcall(function() CAP.cp = type(mouse1press) == "function" end)
+pcall(function() CAP.cr = type(mouse1release) == "function" end)
 
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
+-- ============================================================
+-- HELPERS
+-- ============================================================
+local function cl(v, l, h)
+    return v < l and l or (v > h and h or v)
+end
 
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
+local function sg(x)
+    return x > 0 and 1 or (x < 0 and -1 or 0)
+end
 
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
+local function rs(l)
+    local t = {}
+    for i = 1, l or 16 do t[i] = string.char(math.random(97, 122)) end
+    return table.concat(t)
+end
 
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
+-- ============================================================
+-- SETTINGS
+-- ============================================================
+local S = {
+    KB = {am = "F1", es = "F2", sl = "F3", tr = "F4", mn = "F5", wc = "F6"},
+    AM = {on = false, fov = 100, sm = 0.35, md = 1000, pd = 0.05, tc = true, wc = false},
+    SL = {on = false, sm = 0.3, md = 1000, tc = true, wc = false},
+    TR = {on = false, dl = 0.05, md = 1000, rd = true, tc = true, wc = false, arm = false},
+    ES = {on = false, md = 1000, tc = true,
+        ce = Color3.fromRGB(255,60,60), ct = Color3.fromRGB(60,200,60)},
+    FV = {on = true, r = 130, c = Color3.fromRGB(255,255,255), th = 1.5, fl = false, tr = 0.6},
+}
+local ST = {cd = 0, mn = false, ld = true, tg = nil, igScroll = 0, igQuery = "", igOpen = false, fr = 0, espT = 0, dbg = false}
 
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
+-- ============================================================
+-- GUI STATE — declared BEFORE the helper functions below!
+-- ============================================================
+local GUI = {}
+local SI = {}
 
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
+-- ============================================================
+-- HOLD TOGGLE + IGNORE LIST
+-- ============================================================
+local holdToAimEnabled = false
+local IGNORE = {}
+local function isIgnored(pl)
+    return IGNORE[pl] == true
+end
 
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
+-- ============================================================
+-- KEY MAP
+-- ============================================================
+local EN = {
+    [Enum.KeyCode.F1] = "F1",  [Enum.KeyCode.F2] = "F2",
+    [Enum.KeyCode.F3] = "F3",  [Enum.KeyCode.F4] = "F4",
+    [Enum.KeyCode.F5] = "F5",  [Enum.KeyCode.F6] = "F6",
+    [Enum.UserInputType.MouseButton2] = "MouseButton2",
+}
 
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
+local function ef(n)
+    if not n then return nil end
+    local ok, v = pcall(function() return Enum.KeyCode[n] end)
+    if ok then return v end
+    ok, v = pcall(function() return Enum.UserInputType[n] end)
+    return ok and v or nil
+end
 
-   END OF TERMS AND CONDITIONS
+local function mk(input, key)
+    local target = ef(S.KB[key])
+    if not target then return false end
+    return input.KeyCode == target or input.UserInputType == target
+end
 
-   APPENDIX: How to apply the Apache License to your work.
+local function isM(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.MouseButton2
+        or input.UserInputType == Enum.UserInputType.MouseButton3
+end
 
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
+-- ============================================================
+-- ENTITY — cached per-throttle-cycle (with staleness guard)
+-- ============================================================
+local HDS = {"Head","head","HumanoidRootPart","Torso","UpperTorso","LowerTorso"}
+local PART_CACHE = {}
+local LOSC = {}  -- wall-check cache, cleared with part cache
 
-   Copyright [yyyy] [name of copyright owner]
+local function clearPartCache()
+    PART_CACHE = {}
+    LOSC = {}
+end
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+local function fp(c, headOnly)
+    if not c then return nil end
+    local cached = PART_CACHE[c]
+    if cached ~= nil then
+        if cached.Parent == nil then
+            PART_CACHE[c] = nil  -- dead part from a previous life
+        else
+            return cached
+        end
+    end
 
-       http://www.apache.org/licenses/LICENSE-2.0
+    if headOnly then
+        local v = c:FindFirstChild("Head")
+        if v and v:IsA("BasePart") then
+            PART_CACHE[c] = v
+            return v
+        end
+    end
+    for i = 1, #HDS do
+        local v = c:FindFirstChild(HDS[i])
+        if v and v:IsA("BasePart") then
+            PART_CACHE[c] = v
+            return v
+        end
+    end
+    local b, by = nil, -1e9
+    for _, v in ipairs(c:GetChildren()) do
+        if v:IsA("BasePart") and v.Position.Y > by then
+            b, by = v, v.Position.Y
+        end
+    end
+    PART_CACHE[c] = b
+    return b
+end
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+local function fr(c)
+    for _, n in ipairs({"HumanoidRootPart","Torso","LowerTorso","UpperTorso"}) do
+        local v = c:FindFirstChild(n)
+        if v and v:IsA("BasePart") then return v end
+    end
+    return fp(c)
+end
+
+local function al(c)
+    if not c then return false end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if h and h.Health > 0 then
+        for _, v in ipairs(c:GetChildren()) do
+            if v:IsA("BasePart") then return true end
+        end
+    end
+    return false
+end
+
+-- ============================================================
+-- TEAM CHECK + IGNORE (ignore list runs independently)
+-- ============================================================
+local WHITE_BRICK = BrickColor.new("White")
+
+local function en(pl)
+    if pl == ME then return false end
+    if not S.AM.tc then return true end
+    local myColor = ME.TeamColor
+    local theirColor = pl.TeamColor
+    if myColor == WHITE_BRICK or theirColor == WHITE_BRICK then return true end
+    return myColor ~= theirColor
+end
+
+-- ============================================================
+-- WALL CHECK (shared RaycastParams + 0.08s per-part cache)
+-- ============================================================
+local RAY_PARAMS
+local function ensureRayParams()
+    if not RAY_PARAMS then
+        RAY_PARAMS = RaycastParams.new()
+        RAY_PARAMS.FilterType = Enum.RaycastFilterType.Blacklist
+    end
+    return RAY_PARAMS
+end
+
+local function los(p)
+    if not p then return false end
+    local now = os.clock()
+    local c = LOSC[p]
+    if c and now - c.t < 0.08 then return c.v end
+    local ok, r = pcall(function()
+        local cp = CAM.CFrame.Position
+        local d = p.Position - cp
+        local m = d.Magnitude
+        if m < 1 then return nil end
+        local pa = ensureRayParams()
+        local fl = {}
+        if ME.Character then fl[1] = ME.Character end
+        pa.FilterDescendantsInstances = fl
+        return WS:Raycast(cp, d.Unit * m, pa)
+    end)
+    local v = true
+    if ok and r then
+        local hc = r.Instance and r.Instance:FindFirstAncestorOfClass("Model")
+        v = hc and hc:FindFirstChildOfClass("Humanoid") and true or false
+    end
+    LOSC[p] = {t = now, v = v}
+    return v
+end
+
+-- ============================================================
+-- TARGETING — ONE scan per frame, shared by all three modules
+-- ============================================================
+local function ck(pl, tc)
+    if pl == ME then return false end
+    if isIgnored(pl) then return false end
+    if tc and not en(pl) then return false end
+    local c = pl.Character
+    return c and al(c)
+end
+
+local SCAN = {fr = -1, n = 0, items = {}}
+
+local function doScan()
+    local all = Players:GetPlayers()
+    local n = 0
+    local cx, cy = CAM.ViewportSize.X / 2, CAM.ViewportSize.Y / 2
+    local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
+    local camPos = CAM.CFrame.Position
+    for i = 1, #all do
+        local pl = all[i]
+        if ck(pl, false) then
+            local p = fp(pl.Character, true) or fp(pl.Character)
+            if p then
+                local sp, on = CAM:WorldToViewportPoint(p.Position)
+                if on then
+                    local e = SCAN.items[n + 1]
+                    if not e then e = {}; SCAN.items[n + 1] = e end
+                    e.pl, e.p = pl, p
+                    e.sx, e.sy = sp.X, sp.Y
+                    e.mD = math.sqrt((sp.X - mx)^2 + (sp.Y - my)^2)
+                    e.cD = math.sqrt((sp.X - cx)^2 + (sp.Y - cy)^2)
+                    e.md = (camPos - p.Position).Magnitude
+                    n = n + 1
+                end
+            end
+        end
+    end
+    SCAN.n = n
+end
+
+local function findTarget(fov, md, tc, wc, useCenter)
+    local f = ST.fr or 0
+    if SCAN.fr ~= f then SCAN.fr = f; doScan() end
+    local bp, bpl, bd = nil, nil, fov or 999
+    local key = useCenter and "cD" or "mD"
+    for i = 1, SCAN.n do
+        local e = SCAN.items[i]
+        if e[key] < bd and e.md <= (md or 1000) then
+            local okT = (not tc) or en(e.pl)
+            if okT and not (wc and not los(e.p)) then
+                bd, bp, bpl = e[key], e.p, e.pl
+            end
+        end
+    end
+    return bp, bpl
+end
+
+-- ============================================================
+-- PREDICTION — keyed by PLAYER (nil-key crash fixed)
+-- ============================================================
+local LP = {}
+local function pp(p, pl)
+    local pr = S.AM.pd
+    if pr <= 0 or not pl then return p.Position end
+    local n = os.clock()
+    local pr2 = LP[pl]
+    LP[pl] = {pos = p.Position, t = n}
+    if pr2 and n - pr2.t > 0.016 and n - pr2.t < 0.5 then
+        local v = (p.Position - pr2.pos) / (n - pr2.t)
+        if v.Magnitude > 500 then v = v * (500 / v.Magnitude) end
+        return p.Position + v * pr
+    end
+    return p.Position
+end
+
+-- ============================================================
+-- FOV CIRCLE (Drawing capability-gated)
+-- ============================================================
+local FC
+if CAP.d then
+    local ok = pcall(function() local c = Drawing.new("Circle"); c:Remove() end)
+    if ok then
+        FC = Drawing.new("Circle")
+        if FC then
+            FC.Visible = S.FV.on
+            FC.Radius = S.FV.r
+            FC.Color = S.FV.c
+            FC.Thickness = S.FV.th
+            FC.NumSides = 48
+            FC.Filled = S.FV.fl
+            FC.Transparency = S.FV.tr
+        end
+    end
+end
+
+-- ============================================================
+-- AIMBOT  (every frame, dt-based smoothing, prediction both paths)
+-- ============================================================
+local function doAimbot(dt)
+    if not S.AM.on then ST.tg = nil; return end
+    local p, pl = findTarget(S.FV.r, S.AM.md, S.AM.tc, S.AM.wc, false)
+    if not p then ST.tg = nil; return end
+    ST.tg = p
+    local pos = (S.AM.pd > 0) and pp(p, pl) or p.Position
+
+    if not CAP.mr and not CAP.ma then
+        -- CAMERA PATH (no mouse control available)
+        local lk = CFrame.lookAt(CAM.CFrame.Position, pos)
+        local sp, on = CAM:WorldToViewportPoint(pos)
+        local d = on and (Vector2.new(sp.X, sp.Y) - Vector2.new(CAM.ViewportSize.X/2, CAM.ViewportSize.Y/2)).Magnitude or 400
+        local dNorm = cl(d / 350, 0, 1)
+        local smoothEff = math.max(0.08, S.AM.sm * (1 - dNorm * 0.6))
+        local al = 1 - math.pow(1 - smoothEff, (dt or 0.016) * 60)
+        CAM.CFrame = CAM.CFrame:Lerp(lk, cl(al, 0, 0.6))
+        return
+    end
+
+    -- MOUSE PATH (now leads targets too)
+    local sp, on = CAM:WorldToViewportPoint(pos)
+    if not on then return end
+    local cx, cy = CAM.ViewportSize.X/2, CAM.ViewportSize.Y/2
+    local dx, dy = sp.X - cx, sp.Y - cy
+    local d = math.sqrt(dx*dx + dy*dy)
+    if d < 4 then return end -- smaller deadzone = snappier lock
+
+    -- Distance-adaptive responsiveness
+    local dNorm = cl(d / 350, 0, 1)
+    local smoothEff = math.max(0.08, S.AM.sm * (1 - dNorm * 0.6))
+
+    local f = 1 - smoothEff
+    local mx, my = dx * f, dy * f
+
+    -- Adaptive per-tick cap
+    local mm = 14 + dNorm * 34
+    if math.abs(mx) > mm then mx = sg(dx) * mm end
+    if math.abs(my) > mm then my = sg(dy) * mm end
+
+    -- Tiny humanizer
+    if RNG:NextNumber() < 0.04 then return end
+
+    if CAP.mr then
+        pcall(mousemoverel, mx, my)
+    else
+        local gx, gy = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
+        pcall(mousemoveabs, gx + mx, gy + my)
+    end
+end
+
+-- ============================================================
+-- SILENT AIM
+-- ============================================================
+local function sa()
+    if not S.SL.on or not ST.arm then return end
+    if not CAP.mr and not CAP.ma then return end
+    if RNG:NextNumber() < 0.7 then return end
+
+    pcall(function()
+        local p = findTarget(S.FV.r, S.SL.md, S.SL.tc, S.SL.wc, true)
+        if not p then return end
+        local sp, on = CAM:WorldToViewportPoint(p.Position)
+        if not on then return end
+        local cx, cy = CAM.ViewportSize.X/2, CAM.ViewportSize.Y/2
+        local dx, dy = sp.X - cx, sp.Y - cy
+        local d = math.sqrt(dx*dx + dy*dy)
+        if d < 25 then return end
+
+        local f = 1 - S.SL.sm
+        local mx, my = dx * f, dy * f
+        local mm = 10 + S.SL.sm * 8
+        if math.abs(mx) > mm then mx = sg(dx) * mm end
+        if math.abs(my) > mm then my = sg(dy) * mm end
+
+        if CAP.mr then pcall(mousemoverel, mx, my)
+        else
+            local gx, gy = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
+            pcall(mousemoveabs, gx + mx, gy + my)
+        end
+    end)
+end
+
+-- ============================================================
+-- TRIGGERBOT
+-- ============================================================
+local function sc()
+    if CAP.c1 then mouse1click(); return end
+    if CAP.cp and CAP.cr then
+        mouse1press(); tw(0.015); mouse1release()
+    end
+end
+
+local function tb()
+    if not S.TR.on or not ST.arm then return end
+    pcall(function()
+        local n = os.clock()
+        if n < ST.cd then return end
+        if RNG:NextNumber() < 0.15 then return end
+
+        local p = findTarget(15, S.TR.md, S.TR.tc, S.TR.wc, true)
+        if not p then return end
+        local sp, on = CAM:WorldToViewportPoint(p.Position)
+        if not on then return end
+        local cx, cy = CAM.ViewportSize.X/2, CAM.ViewportSize.Y/2
+        if math.sqrt((sp.X-cx)^2 + (sp.Y-cy)^2) > 8 then return end
+
+        local dl = math.max(S.TR.dl, 0.08)
+        if S.TR.rd then dl = dl + RNG:NextNumber(-0.02, 0.035); if dl < 0.05 then dl = 0.05 end end
+        ST.cd = n + dl
+
+        if dl <= 0.05 then sc()
+        else tsp(function() tw(dl); if ST.ld and S.TR.on and ST.arm then sc() end end)
+        end
+    end)
+end
+
+-- ============================================================
+-- ESP
+-- ============================================================
+local IESP = {}
+
+local function createInstanceESP(pl)
+    local ok = pcall(function()
+        if IESP[pl] then return end
+        local c = pl.Character
+        if not c then return end
+
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "V94OPSYX_HL_" .. pl.UserId
+        highlight.FillTransparency = 0.5
+        highlight.OutlineTransparency = 0.2
+        highlight.FillColor = en(pl) and S.ES.ce or S.ES.ct
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.Adornee = c
+        highlight.Parent = c
+
+        local bg = Instance.new("BillboardGui")
+        bg.Name = "V94OPSYX_BG_" .. pl.UserId
+        bg.Size = UDim2.new(0, 200, 0, 50)
+        bg.StudsOffset = Vector3.new(0, 3.5, 0)
+        bg.AlwaysOnTop = true
+        local head = c:FindFirstChild("Head") or fp(c)
+        if head then bg.Adornee = head end
+        bg.Parent = c
+
+        local txt = Instance.new("TextLabel")
+        txt.Size = UDim2.new(1, 0, 1, 0)
+        txt.BackgroundTransparency = 1
+        txt.Text = pl.Name
+        txt.TextColor3 = Color3.fromRGB(255, 255, 255)
+        txt.TextStrokeTransparency = 0.2
+        txt.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        txt.Font = Enum.Font.GothamBold
+        txt.TextSize = 16
+        txt.Parent = bg
+
+        IESP[pl] = {highlight = highlight, billboard = bg}
+    end)
+    if not ok then IESP[pl] = false end
+end
+
+local function destroyInstanceESP(pl)
+    local esp = IESP[pl]
+    if not esp then return end
+    if esp == false then IESP[pl] = nil; return end
+    pcall(function() esp.highlight:Destroy() end)
+    pcall(function() esp.billboard:Destroy() end)
+    IESP[pl] = nil
+end
+
+local function destroyAllInstanceESP()
+    for pl in pairs(IESP) do destroyInstanceESP(pl) end
+end
+
+-- ============================================================
+-- GUI HELPERS
+-- ============================================================
+local function setMenuVisible(v)
+    if not GUI.main then return end
+    GUI.main.Visible = v
+    if not v then
+        if GUI.igPanel then GUI.igPanel.Visible = false end
+        if GUI.setPanel then GUI.setPanel.Visible = false end
+        ST.mn = false
+        ST.igOpen = false
+        SI.dragging = false
+        ST._rb = nil
+        if GUI.restoreBar then GUI.restoreBar.Visible = true end
+    else
+        if GUI.restoreBar then GUI.restoreBar.Visible = false end
+    end
+end
+
+local function refreshIgnorePanel()
+    local container = GUI.igContainer
+    if not container then return end
+
+    local q = ""
+    if GUI.igSearch then
+        q = (GUI.igSearch.Text or ""):lower()
+    end
+
+    if q ~= ST.igQuery then
+        ST.igQuery = q
+        ST.igScroll = 0
+    end
+
+    local children = container:GetChildren()
+    for i = #children, 1, -1 do
+        local child = children[i]
+        if child:IsA("TextButton") or child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+
+    local list = {}
+    local allPlayers = Players:GetPlayers()
+    for i = 1, #allPlayers do
+        local pl = allPlayers[i]
+        if pl ~= ME then
+            if q == "" or string.find(pl.Name:lower(), q, 1, true) then
+                list[#list + 1] = pl
+            end
+        end
+    end
+    table.sort(list, function(a, b) return a.Name < b.Name end)
+
+    if #list == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.Position = UDim2.new(0, 0, 0, 10)
+        empty.BackgroundTransparency = 1
+        empty.Text = q ~= "" and "No players match" or "No players in server"
+        empty.TextColor3 = Color3.fromRGB(180, 180, 180)
+        empty.TextSize = 14
+        empty.Font = Enum.Font.Gotham
+        empty.Parent = container
+        return
+    end
+
+    local ROW = 30
+    local VISIBLE = math.floor((container.Size.Y.Offset - 8) / ROW)
+    if VISIBLE < 1 then VISIBLE = 1 end
+    local MAX = math.max(0, #list - VISIBLE)
+    ST.igScroll = cl(ST.igScroll or 0, 0, MAX)
+
+    local y = 4
+    local lastI = math.min(#list, ST.igScroll + VISIBLE)
+    for i = 1 + ST.igScroll, lastI do
+        local pl = list[i]
+        local ignored = isIgnored(pl)
+
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, 0, 0, 26)
+        b.Position = UDim2.new(0, 0, 0, y)
+        b.BackgroundColor3 = ignored and Color3.fromRGB(100, 0, 0) or Color3.fromRGB(40, 40, 60)
+        b.BorderSizePixel = 0
+        b.Text = pl.Name
+        b.TextColor3 = ignored and Color3.fromRGB(255, 100, 100) or Color3.fromRGB(200, 200, 255)
+        b.TextSize = 12
+        b.Font = Enum.Font.GothamBold
+        b.Parent = container
+
+        b.MouseButton1Down:Connect(function()
+            if IGNORE[pl] then
+                IGNORE[pl] = nil
+            else
+                IGNORE[pl] = true
+            end
+            refreshIgnorePanel()
+        end)
+
+        y = y + ROW
+    end
+
+    if GUI.igUp then
+        GUI.igUp.BackgroundColor3 = ST.igScroll > 0 and Color3.fromRGB(60, 40, 90) or Color3.fromRGB(30, 25, 40)
+    end
+    if GUI.igDown then
+        GUI.igDown.BackgroundColor3 = ST.igScroll < MAX and Color3.fromRGB(60, 40, 90) or Color3.fromRGB(30, 25, 40)
+    end
+
+    if ST.dbg then
+        print("[OPSYX] Ignore panel loaded: " .. #list .. " players (" .. (lastI - ST.igScroll) .. " shown)" .. (q ~= "" and " | search: " .. q or ""))
+    end
+end
+
+-- ============================================================
+-- GUI CONSTRUCTION
+-- ============================================================
+
+local function cg()
+    local gn = rs(16); local mn = rs(12); local sn = rs(12); local bn = rs(12)
+    local sg = Instance.new("ScreenGui")
+    sg.Name = gn; sg.ResetOnSpawn = false; sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    local ok = pcall(function() sg.Parent = ME:WaitForChild("PlayerGui") end)
+    if not ok then ok = pcall(function() sg.Parent = CG end) end
+    if not ok then print("[V9.12-OPSYX] No GUI"); return end
+    GUI.sg = sg
+    if not ST.ourGuis then ST.ourGuis = {} end
+    table.insert(ST.ourGuis, sg)
+
+    local main = Instance.new("Frame")
+    main.Name = mn; main.Size = UDim2.new(0, 210, 0, 290)
+    main.Position = UDim2.new(1, -500, 0, 70)
+    main.BackgroundColor3 = Color3.fromRGB(8, 8, 12); main.BackgroundTransparency = 0.12
+    main.BorderSizePixel = 0; main.Active = true; main.Draggable = true; main.Parent = sg
+    pcall(function()
+        Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
+        local st = Instance.new("UIStroke", main); st.Color = Color3.fromRGB(30, 30, 50); st.Thickness = 1
+    end)
+    GUI.main = main
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 24); title.BackgroundTransparency = 1
+    title.Text = "V9.12 OPSYX"; title.TextColor3 = Color3.fromRGB(0, 200, 255)
+    title.TextSize = 14; title.Font = Enum.Font.GothamBold; title.Parent = main
+
+    -- Chrome-style window controls (ASCII-safe)
+    local WBTN = 22
+    local WCY = 2
+
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, WBTN, 0, WBTN)
+    minBtn.Position = UDim2.new(1, -(WBTN * 2 + 8), 0, WCY)
+    minBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 70); minBtn.BackgroundTransparency = 0.2
+    minBtn.BorderSizePixel = 0; minBtn.Text = "-"
+    minBtn.TextColor3 = Color3.fromRGB(255, 255, 255); minBtn.TextSize = 14
+    minBtn.Font = Enum.Font.GothamBold; minBtn.Parent = main
+    pcall(function() Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 4) end)
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, WBTN, 0, WBTN)
+    closeBtn.Position = UDim2.new(1, -(WBTN + 4), 0, WCY)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(120, 30, 30); closeBtn.BackgroundTransparency = 0.2
+    closeBtn.BorderSizePixel = 0; closeBtn.Text = "X"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255); closeBtn.TextSize = 12
+    closeBtn.Font = Enum.Font.GothamBold; closeBtn.Parent = main
+    pcall(function() Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4) end)
+
+    minBtn.MouseEnter:Connect(function() minBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 120) end)
+    minBtn.MouseLeave:Connect(function() minBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 70) end)
+    closeBtn.MouseEnter:Connect(function() closeBtn.BackgroundColor3 = Color3.fromRGB(200, 40, 40) end)
+    closeBtn.MouseLeave:Connect(function() closeBtn.BackgroundColor3 = Color3.fromRGB(120, 30, 30) end)
+
+    local restoreBar = Instance.new("TextButton")
+    restoreBar.Size = UDim2.new(0, 110, 0, 24)
+    restoreBar.Position = UDim2.new(0, 15, 0, 40)
+    restoreBar.BackgroundColor3 = Color3.fromRGB(8, 8, 12); restoreBar.BackgroundTransparency = 0.12
+    restoreBar.BorderSizePixel = 0; restoreBar.Text = "OPSYX ^"
+    restoreBar.TextColor3 = Color3.fromRGB(0, 200, 255); restoreBar.TextSize = 12
+    restoreBar.Font = Enum.Font.GothamBold; restoreBar.Visible = false; restoreBar.Parent = sg
+    pcall(function() Instance.new("UICorner", restoreBar).CornerRadius = UDim.new(0, 6) end)
+    restoreBar.MouseEnter:Connect(function() restoreBar.BackgroundColor3 = Color3.fromRGB(20, 30, 50) end)
+    restoreBar.MouseLeave:Connect(function() restoreBar.BackgroundColor3 = Color3.fromRGB(8, 8, 12) end)
+    GUI.restoreBar = restoreBar
+
+    minBtn.MouseButton1Down:Connect(function()
+        setMenuVisible(false)
+    end)
+
+    closeBtn.MouseButton1Down:Connect(function()
+        setMenuVisible(false)
+    end)
+
+    restoreBar.MouseButton1Down:Connect(function()
+        setMenuVisible(true)
+    end)
+
+    local RED = Color3.fromRGB(255, 60, 60)
+    local GRN = Color3.fromRGB(60, 255, 60)
+    local ORG = Color3.fromRGB(255, 140, 0)
+    local BLU = Color3.fromRGB(60, 120, 255)
+
+    local function makeToggleButton(txt, y, off, on, getter, setter)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.9, 0, 0, 24); b.Position = UDim2.new(0.05, 0, 0, y)
+        b.BackgroundColor3 = getter() and on or off; b.BackgroundTransparency = 0.25
+        b.BorderSizePixel = 0; b.Text = txt .. ": " .. (getter() and "ON" or "OFF")
+        b.TextColor3 = Color3.fromRGB(255, 255, 255); b.TextSize = 12
+        b.Font = Enum.Font.GothamBold; b.Parent = main
+        pcall(function() Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5) end)
+        b.MouseButton1Down:Connect(function()
+            setter()
+            local ns = getter()
+            b.BackgroundColor3 = ns and on or off
+            b.Text = txt .. ": " .. (ns and "ON" or "OFF")
+        end)
+        return b
+    end
+
+    makeToggleButton("AIMBOT", 28, RED, GRN,
+        function() return S.AM.on end,
+        function() S.AM.on = not S.AM.on; if not S.AM.on then ST.tg = nil end end)
+
+    makeToggleButton("ESP", 58, RED, GRN,
+        function() return S.ES.on end,
+        function() S.ES.on = not S.ES.on; if not S.ES.on then destroyAllInstanceESP() end end)
+
+    makeToggleButton("SILENT", 88, ORG, GRN,
+        function() return S.SL.on end,
+        function() S.SL.on = not S.SL.on end)
+
+    makeToggleButton("TRIGGER", 118, RED, GRN,
+        function() return S.TR.on end,
+        function() S.TR.on = not S.TR.on end)
+
+    makeToggleButton("FOV", 148, BLU, GRN,
+        function() return S.FV.on end,
+        function() S.FV.on = not S.FV.on end)
+
+    makeToggleButton("WALL", 178, ORG, GRN,
+        function() return S.AM.wc end,
+        function() local nv = not S.AM.wc; S.AM.wc = nv; S.SL.wc = nv; S.TR.wc = nv end)
+
+    -- Hold-to-aim toggle
+    do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0.9, 0, 0, 24); b.Position = UDim2.new(0.05, 0, 0, 206)
+        b.BackgroundColor3 = holdToAimEnabled and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(140, 0, 0)
+        b.BackgroundTransparency = 0.25; b.BorderSizePixel = 0
+        b.Text = "HOLD: " .. (holdToAimEnabled and "ON" or "OFF")
+        b.TextColor3 = Color3.fromRGB(255, 255, 255); b.TextSize = 12
+        b.Font = Enum.Font.GothamBold; b.Parent = main
+        Instance.new("BoolValue", b).Name = "_holdTag93"
+        pcall(function() Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5) end)
+        b.MouseButton1Down:Connect(function()
+            holdToAimEnabled = not holdToAimEnabled
+            b.BackgroundColor3 = holdToAimEnabled and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(140, 0, 0)
+            b.Text = "HOLD: " .. (holdToAimEnabled and "ON" or "OFF")
+            if not holdToAimEnabled and S.AM.on and ST.arm then S.AM.on = false end
+        end)
+    end
+
+    -- IGNORE button
+    local igBtn = Instance.new("TextButton")
+    igBtn.Size = UDim2.new(0.9, 0, 0, 24); igBtn.Position = UDim2.new(0.05, 0, 0, 234)
+    igBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 60); igBtn.BackgroundTransparency = 0.25
+    igBtn.BorderSizePixel = 0; igBtn.Text = "IGNORE"
+    igBtn.TextColor3 = Color3.fromRGB(200, 150, 255); igBtn.TextSize = 12
+    igBtn.Font = Enum.Font.GothamBold; igBtn.Parent = main
+    pcall(function() Instance.new("UICorner", igBtn).CornerRadius = UDim.new(0, 5) end)
+
+    -- IGNORE panel (Frame-based + search bar + scroll buttons)
+    local igPanel = Instance.new("Frame")
+    igPanel.Name = bn; igPanel.Size = UDim2.new(0, 230, 0, 500)
+    igPanel.Position = UDim2.new(0, 240, 0, 70)
+    igPanel.BackgroundColor3 = Color3.fromRGB(8, 8, 12); igPanel.BackgroundTransparency = 0.12
+    igPanel.BorderSizePixel = 0; igPanel.Active = true; igPanel.Draggable = true
+    igPanel.Visible = false; igPanel.Parent = sg
+    pcall(function()
+        Instance.new("UICorner", igPanel).CornerRadius = UDim.new(0, 8)
+        local st = Instance.new("UIStroke", igPanel); st.Color = Color3.fromRGB(60, 30, 80); st.Thickness = 1.5
+    end)
+    GUI.igPanel = igPanel
+
+    local igTitle = Instance.new("TextLabel")
+    igTitle.Size = UDim2.new(1, 0, 0, 24); igTitle.BackgroundTransparency = 1
+    igTitle.Text = "IGNORE PLAYERS (AIMBOT)"; igTitle.TextColor3 = Color3.fromRGB(200, 150, 255)
+    igTitle.TextSize = 12; igTitle.Font = Enum.Font.GothamBold; igTitle.Parent = igPanel
+
+    local igSearch = Instance.new("TextBox")
+    igSearch.Size = UDim2.new(1, -10, 0, 26)
+    igSearch.Position = UDim2.new(0, 5, 0, 26)
+    igSearch.BackgroundColor3 = Color3.fromRGB(20, 20, 34)
+    igSearch.BackgroundTransparency = 0.3
+    igSearch.BorderSizePixel = 0
+    igSearch.PlaceholderText = "Search player..."
+    igSearch.Text = ""
+    igSearch.TextColor3 = Color3.fromRGB(220, 220, 255)
+    igSearch.PlaceholderColor3 = Color3.fromRGB(120, 120, 150)
+    igSearch.TextSize = 12
+    igSearch.Font = Enum.Font.Gotham
+    igSearch.ClearTextOnFocus = false
+    igSearch.Parent = igPanel
+    pcall(function() Instance.new("UICorner", igSearch).CornerRadius = UDim.new(0, 5) end)
+    GUI.igSearch = igSearch
+
+    igSearch:GetPropertyChangedSignal("Text"):Connect(function()
+        pcall(refreshIgnorePanel)
+    end)
+
+    local igContainer = Instance.new("Frame")
+    igContainer.Size = UDim2.new(1, -10, 0, 370)
+    igContainer.Position = UDim2.new(0, 5, 0, 58)
+    igContainer.BackgroundTransparency = 1
+    igContainer.BorderSizePixel = 0
+    igContainer.Parent = igPanel
+    GUI.igContainer = igContainer
+
+    local igUp = Instance.new("TextButton")
+    igUp.Size = UDim2.new(0, 64, 0, 24); igUp.Position = UDim2.new(0, 10, 1, -62)
+    igUp.BackgroundColor3 = Color3.fromRGB(60, 40, 90); igUp.BackgroundTransparency = 0.3
+    igUp.BorderSizePixel = 0; igUp.Text = "^"
+    igUp.TextColor3 = Color3.fromRGB(220, 180, 255); igUp.TextSize = 13
+    igUp.Font = Enum.Font.GothamBold; igUp.Parent = igPanel
+    pcall(function() Instance.new("UICorner", igUp).CornerRadius = UDim.new(0, 5) end)
+    igUp.MouseButton1Down:Connect(function()
+        ST.igScroll = math.max(0, (ST.igScroll or 0) - 6)
+        refreshIgnorePanel()
+    end)
+    GUI.igUp = igUp
+
+    local igDown = Instance.new("TextButton")
+    igDown.Size = UDim2.new(0, 64, 0, 24); igDown.Position = UDim2.new(0, 82, 1, -62)
+    igDown.BackgroundColor3 = Color3.fromRGB(60, 40, 90); igDown.BackgroundTransparency = 0.3
+    igDown.BorderSizePixel = 0; igDown.Text = "v"
+    igDown.TextColor3 = Color3.fromRGB(220, 180, 255); igDown.TextSize = 13
+    igDown.Font = Enum.Font.GothamBold; igDown.Parent = igPanel
+    pcall(function() Instance.new("UICorner", igDown).CornerRadius = UDim.new(0, 5) end)
+    igDown.MouseButton1Down:Connect(function()
+        ST.igScroll = ST.igScroll + 6
+        refreshIgnorePanel()
+    end)
+    GUI.igDown = igDown
+
+    local igClose = Instance.new("TextButton")
+    igClose.Size = UDim2.new(0, 80, 0, 24)
+    igClose.Position = UDim2.new(0.5, -40, 1, -30)
+    igClose.BackgroundColor3 = Color3.fromRGB(60, 30, 30); igClose.BackgroundTransparency = 0.3
+    igClose.BorderSizePixel = 0; igClose.Text = "CLOSE"
+    igClose.TextColor3 = Color3.fromRGB(255, 150, 150); igClose.TextSize = 11
+    igClose.Font = Enum.Font.GothamBold; igClose.Parent = igPanel
+    pcall(function() Instance.new("UICorner", igClose).CornerRadius = UDim.new(0, 5) end)
+    igClose.MouseButton1Down:Connect(function() igPanel.Visible = false; ST.igOpen = false end)
+
+    igBtn.MouseButton1Down:Connect(function()
+        ST.igOpen = not ST.igOpen
+        igPanel.Visible = ST.igOpen
+        if ST.igOpen then
+            local okc, errc = pcall(refreshIgnorePanel)
+            if not okc then print("[OPSYX] Ignore panel error: " .. tostring(errc)) end
+        end
+    end)
+
+    -- Settings/Keys button
+    local setBtn = Instance.new("TextButton")
+    setBtn.Size = UDim2.new(0.9, 0, 0, 26); setBtn.Position = UDim2.new(0.05, 0, 0, 262)
+    setBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 80); setBtn.BackgroundTransparency = 0.25
+    setBtn.BorderSizePixel = 0; setBtn.Text = "KEYS"
+    setBtn.TextColor3 = Color3.fromRGB(200, 200, 255); setBtn.TextSize = 12
+    setBtn.Font = Enum.Font.GothamBold; setBtn.Parent = main
+    pcall(function() Instance.new("UICorner", setBtn).CornerRadius = UDim.new(0, 5) end)
+
+    local setP = Instance.new("Frame")
+    setP.Name = sn; setP.Size = UDim2.new(0, 340, 0, 385)
+    setP.Position = UDim2.new(0, 240, 0, 70)
+    setP.BackgroundColor3 = Color3.fromRGB(8, 8, 12); setP.BackgroundTransparency = 0.12
+    setP.BorderSizePixel = 0; setP.Active = true; setP.Draggable = true
+    setP.Visible = false; setP.Parent = sg
+    pcall(function()
+        Instance.new("UICorner", setP).CornerRadius = UDim.new(0, 8)
+        local st = Instance.new("UIStroke", setP); st.Color = Color3.fromRGB(40, 40, 80); st.Thickness = 1.5
+    end)
+    GUI.setPanel = setP
+
+    local stitle = Instance.new("TextLabel")
+    stitle.Size = UDim2.new(1, 0, 0, 24); stitle.BackgroundTransparency = 1
+    stitle.Text = "KEYS + FOV"; stitle.TextColor3 = Color3.fromRGB(255, 200, 100)
+    stitle.TextSize = 12; stitle.Font = Enum.Font.GothamBold; stitle.Parent = setP
+
+    local binds = {
+        {l = "Aimbot", k = "am"}, {l = "ESP", k = "es"},
+        {l = "Silent", k = "sl"}, {l = "Trigger", k = "tr"},
+        {l = "Wall",   k = "wc"}, {l = "Menu",   k = "mn"},
+    }
+    for i = 1, #binds do
+        local b = binds[i]; local y = 30 + (i-1) * 35
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(0, 150, 0, 26); lbl.Position = UDim2.new(0, 10, 0, y)
+        lbl.BackgroundTransparency = 1; lbl.Text = b.l
+        lbl.TextColor3 = Color3.fromRGB(200, 200, 200); lbl.TextSize = 12
+        lbl.Font = Enum.Font.Gotham; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = setP
+        local kb = Instance.new("TextButton")
+        kb.Size = UDim2.new(0, 130, 0, 26); kb.Position = UDim2.new(0, 170, 0, y)
+        kb.BackgroundColor3 = Color3.fromRGB(30, 30, 50); kb.BackgroundTransparency = 0.3
+        kb.BorderSizePixel = 0; kb.Text = S.KB[b.k]
+        kb.TextColor3 = Color3.fromRGB(0, 200, 255); kb.TextSize = 12
+        kb.Font = Enum.Font.GothamBold; kb.Parent = setP
+        pcall(function() Instance.new("UICorner", kb).CornerRadius = UDim.new(0, 5) end)
+        local bk = b.k
+        kb.MouseButton1Down:Connect(function()
+            ST._rb = {btn = kb, key = bk, old = S.KB[bk]}
+            kb.Text = "..."; kb.TextColor3 = Color3.fromRGB(255, 200, 0)
+        end)
+    end
+
+    local tcY = 30 + #binds * 35 + 5
+    local tcLbl = Instance.new("TextLabel")
+    tcLbl.Size = UDim2.new(0, 150, 0, 26); tcLbl.Position = UDim2.new(0, 10, 0, tcY)
+    tcLbl.BackgroundTransparency = 1; tcLbl.Text = "Team Check"
+    tcLbl.TextColor3 = Color3.fromRGB(200, 200, 200); tcLbl.TextSize = 12
+    tcLbl.Font = Enum.Font.Gotham; tcLbl.TextXAlignment = Enum.TextXAlignment.Left; tcLbl.Parent = setP
+    local tcBtn = Instance.new("TextButton")
+    tcBtn.Size = UDim2.new(0, 130, 0, 26); tcBtn.Position = UDim2.new(0, 170, 0, tcY)
+    tcBtn.BackgroundColor3 = S.AM.tc and Color3.fromRGB(40, 80, 40) or Color3.fromRGB(80, 40, 40)
+    tcBtn.BackgroundTransparency = 0.3; tcBtn.BorderSizePixel = 0
+    tcBtn.Text = S.AM.tc and "ON" or "OFF"
+    tcBtn.TextColor3 = Color3.fromRGB(255, 255, 255); tcBtn.TextSize = 12
+    tcBtn.Font = Enum.Font.GothamBold; tcBtn.Parent = setP
+    pcall(function() Instance.new("UICorner", tcBtn).CornerRadius = UDim.new(0, 5) end)
+    tcBtn.MouseButton1Down:Connect(function()
+        local nv = not S.AM.tc; S.AM.tc = nv; S.SL.tc = nv; S.TR.tc = nv; S.ES.tc = nv
+        tcBtn.BackgroundColor3 = nv and Color3.fromRGB(40, 80, 40) or Color3.fromRGB(80, 40, 40)
+        tcBtn.Text = nv and "ON" or "OFF"
+    end)
+
+    local slY = tcY + 32
+    local fovLbl = Instance.new("TextLabel")
+    fovLbl.Size = UDim2.new(0, 320, 0, 20); fovLbl.Position = UDim2.new(0, 10, 0, slY)
+    fovLbl.BackgroundTransparency = 1; fovLbl.Text = "FOV: " .. math.floor(S.FV.r)
+    fovLbl.TextColor3 = Color3.fromRGB(200, 200, 200); fovLbl.TextSize = 12
+    fovLbl.Font = Enum.Font.Gotham; fovLbl.TextXAlignment = Enum.TextXAlignment.Left; fovLbl.Parent = setP
+    local sBg = Instance.new("Frame")
+    sBg.Size = UDim2.new(0, 320, 0, 6); sBg.Position = UDim2.new(0, 10, 0, slY + 22)
+    sBg.BackgroundColor3 = Color3.fromRGB(40, 40, 60); sBg.BorderSizePixel = 0; sBg.Parent = setP
+    pcall(function() Instance.new("UICorner", sBg).CornerRadius = UDim.new(0, 3) end)
+    local sFill = Instance.new("Frame")
+    sFill.Size = UDim2.new(S.FV.r / 500, 0, 1, 0)
+    sFill.BackgroundColor3 = Color3.fromRGB(0, 200, 255); sFill.BorderSizePixel = 0; sFill.Parent = sBg
+    pcall(function() Instance.new("UICorner", sFill).CornerRadius = UDim.new(0, 3) end)
+    local sBtn = Instance.new("TextButton")
+    sBtn.Size = UDim2.new(0, 16, 0, 16)
+    sBtn.Position = UDim2.new(S.FV.r / 500, -8, 0, -5)
+    sBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 255); sBtn.BorderSizePixel = 0; sBtn.Text = ""; sBtn.Parent = sBg
+    pcall(function() Instance.new("UICorner", sBtn).CornerRadius = UDim.new(0, 8) end)
+
+    local cY = slY + 38
+    local cBtn = Instance.new("TextButton")
+    cBtn.Size = UDim2.new(0, 120, 0, 22); cBtn.Position = UDim2.new(0, 10, 0, cY)
+    cBtn.BackgroundColor3 = S.FV.c; cBtn.BorderSizePixel = 0; cBtn.Text = "COLOR"
+    cBtn.TextColor3 = Color3.fromRGB(255,255,255); cBtn.TextSize = 10
+    cBtn.Font = Enum.Font.GothamBold; cBtn.Parent = setP
+    pcall(function() Instance.new("UICorner", cBtn).CornerRadius = UDim.new(0, 5) end)
+    local cols = {Color3.fromRGB(255,255,255), Color3.fromRGB(0,200,255), Color3.fromRGB(255,60,60), Color3.fromRGB(60,255,60), Color3.fromRGB(255,200,0)}
+    local ci = 1
+    cBtn.MouseButton1Down:Connect(function()
+        ci = ci % #cols + 1; S.FV.c = cols[ci]; cBtn.BackgroundColor3 = S.FV.c
+        if FC then FC.Color = S.FV.c end
+    end)
+
+    local clBtn = Instance.new("TextButton")
+    clBtn.Size = UDim2.new(0, 80, 0, 24)
+    clBtn.Position = UDim2.new(0.5, -40, 0, setP.Size.Y.Offset - 30)
+    clBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 30); clBtn.BackgroundTransparency = 0.3
+    clBtn.BorderSizePixel = 0; clBtn.Text = "CLOSE"
+    clBtn.TextColor3 = Color3.fromRGB(255, 150, 150); clBtn.TextSize = 11
+    clBtn.Font = Enum.Font.GothamBold; clBtn.Parent = setP
+    pcall(function() Instance.new("UICorner", clBtn).CornerRadius = UDim.new(0, 5) end)
+    clBtn.MouseButton1Down:Connect(function() ST.mn = false; setP.Visible = false end)
+    setBtn.MouseButton1Down:Connect(function() ST.mn = not ST.mn; setP.Visible = ST.mn end)
+
+    SI = {sBg = sBg, sBtn = sBtn, sFill = sFill, fovLbl = fovLbl, dragging = false}
+    sBtn.MouseButton1Down:Connect(function() SI.dragging = true end)
+end
+
+-- ============================================================
+-- INPUT (pcall-wrapped)
+-- ============================================================
+pcall(function()
+    UI.InputBegan:Connect(function(inp, gpd)
+        -- Don't hijack keys while typing in the IGNORE search box
+        if UI:GetFocusedTextBox() then return end
+
+        if ST._rb then
+            if isM(inp) then
+                if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+                    S.KB[ST._rb.key] = "MouseButton2"
+                    ST._rb.btn.Text = "MouseButton2"; ST._rb.btn.TextColor3 = Color3.fromRGB(0, 200, 255); ST._rb = nil
+                end
+                return
+            end
+            if inp.KeyCode == Enum.KeyCode.Escape then
+                ST._rb.btn.Text = ST._rb.old; ST._rb.btn.TextColor3 = Color3.fromRGB(0, 200, 255); ST._rb = nil; return
+            end
+            local nn = nil
+            if inp.KeyCode ~= Enum.KeyCode.Unknown then
+                nn = EN[inp.KeyCode] or tostring(inp.KeyCode):gsub("Enum.KeyCode.","")
+            elseif inp.UserInputType ~= Enum.UserInputType.None then
+                nn = EN[inp.UserInputType] or tostring(inp.UserInputType):gsub("Enum.UserInputType.","")
+            end
+            if nn then S.KB[ST._rb.key] = nn; ST._rb.btn.Text = nn
+                ST._rb.btn.TextColor3 = Color3.fromRGB(0, 200, 255); ST._rb = nil end
+            return
+        end
+
+        if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+            ST.arm = true
+            if holdToAimEnabled then S.AM.on = true end
+        end
+
+        -- F7 toggles menu visibility (hide/show)
+        if inp.KeyCode == Enum.KeyCode.F7 then
+            if GUI.main then
+                setMenuVisible(not GUI.main.Visible)
+            end
+        end
+
+        local function updateButton(name, state, onColor, offColor)
+            local children = GUI.main and GUI.main:GetChildren() or {}
+            for i = 1, #children do
+                local v = children[i]
+                if v:IsA("TextButton") and v.Text:find(name) then
+                    v.Text = name .. ": " .. (state and "ON" or "OFF")
+                    v.BackgroundColor3 = state and onColor or offColor
+                end
+            end
+        end
+
+        if mk(inp, "am") then
+            S.AM.on = not S.AM.on; if not S.AM.on then ST.tg = nil end
+            updateButton("AIMBOT", S.AM.on, Color3.fromRGB(60,255,60), Color3.fromRGB(255,60,60))
+        end
+        if mk(inp, "es") then
+            S.ES.on = not S.ES.on; if not S.ES.on then destroyAllInstanceESP() end
+            updateButton("ESP", S.ES.on, Color3.fromRGB(60,255,60), Color3.fromRGB(255,60,60))
+        end
+        if mk(inp, "sl") then
+            S.SL.on = not S.SL.on
+            updateButton("SILENT", S.SL.on, Color3.fromRGB(60,255,60), Color3.fromRGB(255,140,0))
+        end
+        if mk(inp, "tr") then
+            S.TR.on = not S.TR.on
+            updateButton("TRIGGER", S.TR.on, Color3.fromRGB(60,255,60), Color3.fromRGB(255,60,60))
+        end
+        if mk(inp, "wc") then
+            local nv = not S.AM.wc; S.AM.wc = nv; S.SL.wc = nv; S.TR.wc = nv
+            updateButton("WALL", nv, Color3.fromRGB(60,255,60), Color3.fromRGB(255,140,0))
+        end
+        if mk(inp, "mn") then ST.mn = not ST.mn; if GUI.setPanel then GUI.setPanel.Visible = ST.mn end end
+
+        if gpd then return end
+    end)
+
+    UI.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+            ST.arm = false
+            if holdToAimEnabled then S.AM.on = false end
+        end
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            SI.dragging = false
+        end
+    end)
+end)
+
+-- ============================================================
+-- MOBILE UI (pcall-wrapped)
+-- ============================================================
+if MOB then
+    pcall(function()
+        local tn = rs(12)
+        local tg = Instance.new("ScreenGui"); tg.Name = tn; tg.ResetOnSpawn = false
+        local ok = pcall(function() tg.Parent = ME:WaitForChild("PlayerGui") end)
+        if not ok then pcall(function() tg.Parent = CG end) end
+        if ST.ourGuis then table.insert(ST.ourGuis, tg) else ST.ourGuis = {tg} end
+        local tf = Instance.new("Frame")
+        tf.Size = UDim2.new(0, 50, 0, 170); tf.Position = UDim2.new(1, -60, 0.5, -85)
+        tf.BackgroundTransparency = 1; tf.BorderSizePixel = 0; tf.Parent = tg
+        local function mt(l, y, gs, fn)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(0, 50, 0, 50); b.Position = UDim2.new(0, 0, 0, y)
+            b.BackgroundColor3 = gs() and Color3.fromRGB(60,255,60) or Color3.fromRGB(255,60,60)
+            b.BackgroundTransparency = 0.2; b.BorderSizePixel = 0
+            b.Text = l:sub(1,2); b.TextColor3 = Color3.fromRGB(255,255,255)
+            b.TextSize = 11; b.Font = Enum.Font.GothamBold; b.Parent = tf
+            Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+            b.MouseButton1Down:Connect(function() fn(); b.BackgroundColor3 = gs() and Color3.fromRGB(60,255,60) or Color3.fromRGB(255,60,60) end)
+        end
+        mt("AM", 5, function() return S.AM.on end, function() S.AM.on = not S.AM.on; if not S.AM.on then ST.tg = nil end end)
+        mt("ES", 60, function() return S.ES.on end, function() S.ES.on = not S.ES.on; if not S.ES.on then destroyAllInstanceESP() end end)
+        mt("SL", 115, function() return S.SL.on end, function() S.SL.on = not S.SL.on end)
+        mt("TR", 170, function() return S.TR.on end, function() S.TR.on = not S.TR.on end)
+    end)
+end
+
+-- ============================================================
+-- MAIN LOOP — one shared scan per frame (pcall-wrapped)
+-- ============================================================
+local okCg, errCg = pcall(cg)
+if not okCg then warn("[OPSYX] GUI init error: " .. tostring(errCg)) end
+
+-- PlayerAdded/Removing — GUI is fully ready now
+Players.PlayerAdded:Connect(function()
+    if GUI.igPanel and GUI.igPanel.Visible then
+        pcall(refreshIgnorePanel)
+    end
+end)
+Players.PlayerRemoving:Connect(function(pl)
+    IGNORE[pl] = nil
+    if GUI.igPanel and GUI.igPanel.Visible then
+        pcall(refreshIgnorePanel)
+    end
+end)
+
+local conn
+local okLoop, errLoop = pcall(function()
+    conn = RS.RenderStepped:Connect(function(dt)
+        if not ST.ld then conn:Disconnect(); return end
+        ST.fr = (ST.fr or 0) + 1
+
+        -- FOV circle (every frame — cheap)
+        pcall(function()
+            if not CAP.d or not FC then return end
+            local sh = (S.AM.on or S.SL.on) and S.FV.on
+            local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
+            FC.Visible = sh
+            if sh then
+                FC.Position = Vector2.new(mx, my)
+                FC.Radius = S.FV.r; FC.Color = S.FV.c; FC.Thickness = S.FV.th
+                FC.NumSides = 48; FC.Filled = S.FV.fl; FC.Transparency = S.FV.tr
+            end
+        end)
+
+        -- FOV slider drag (every frame while dragging)
+        pcall(function()
+            if SI.dragging and SI.sBg then
+                local mx = UI:GetMouseLocation().X
+                local ax = SI.sBg.AbsolutePosition.X
+                local aw = SI.sBg.AbsoluteSize.X
+                local pc = cl((mx - ax) / aw, 0, 1)
+                local r = math.floor(pc * 500)
+                S.FV.r = r; SI.sBtn.Position = UDim2.new(pc, -8, 0, -5)
+                SI.sFill.Size = UDim2.new(pc, 0, 1, 0); SI.fovLbl.Text = "FOV: " .. r
+                if FC then FC.Radius = r end
+            end
+        end)
+
+        -- ESP update (wall-clock throttle: ~6.6 updates/sec)
+        local nowT = os.clock()
+        if nowT - ST.espT > 0.15 then
+            ST.espT = nowT
+            pcall(function()
+                clearPartCache()
+                local allPlayers = Players:GetPlayers()
+                for i = 1, #allPlayers do
+                    local pl = allPlayers[i]
+                    if pl ~= ME then
+                        if not S.ES.on then
+                            if IESP[pl] then destroyInstanceESP(pl) end
+                        else
+                            local c = pl.Character
+                            if c and al(c) then
+                                local rt = fr(c)
+                                if rt and (CAM.CFrame.Position - rt.Position).Magnitude <= S.ES.md then
+                                    if IESP[pl] == nil then
+                                        createInstanceESP(pl)
+                                    elseif IESP[pl] ~= false then
+                                        local esp = IESP[pl]
+                                        if esp and esp.highlight then
+                                            esp.highlight.FillColor = en(pl) and S.ES.ce or S.ES.ct
+                                        end
+                                    end
+                                else
+                                    if IESP[pl] then destroyInstanceESP(pl) end
+                                end
+                            else
+                                if IESP[pl] then destroyInstanceESP(pl) end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+
+        -- Aimbot (EVERY frame — shares the scan above)
+        pcall(doAimbot, dt)
+
+        -- Silent aim + Triggerbot (lightweight — reuse the same scan)
+        pcall(sa)
+        pcall(tb)
+    end)
+end)
+if not okLoop then warn("[OPSYX] Main loop failed: " .. tostring(errLoop)) end
+
+-- ============================================================
+-- EVENTS
+-- ============================================================
+Players.PlayerRemoving:Connect(function(pl)
+    destroyInstanceESP(pl)
+    LP[pl] = nil
+    IGNORE[pl] = nil
+end)
+
+local function oca(plr)
+    if plr == ME then return end
+    plr.CharacterAdded:Connect(function()
+        tsp(function()
+            tw(0.5)
+            destroyInstanceESP(plr)
+            LP[plr] = nil
+        end)
+    end)
+end
+local curPlayers = Players:GetPlayers()
+for i = 1, #curPlayers do oca(curPlayers[i]) end
+Players.PlayerAdded:Connect(oca)
+
+-- ============================================================
+-- CLEANUP (only runs via console now — X just hides)
+-- ============================================================
+function _G.__V94OPSYX_CL()
+    ST.ld = false
+    destroyAllInstanceESP()
+    if FC then pcall(function() FC:Remove() end) end
+    if ST.ourGuis then for i = 1, #ST.ourGuis do pcall(function() ST.ourGuis[i]:Destroy() end) end end
+    for pl in pairs(LP) do LP[pl] = nil end
+    PART_CACHE = {}; LOSC = {}
+    _G.__V94OPSYX_LD = nil; _G.__V94OPSYX_CL = nil
+end
+
+print(string.rep("=", 50))
+print("  V9.12 MED OPSYX LOADED")
+print("  - ASCII-only source (safe for weak parsers)")
+print("  - task library fallback (task.wait/task.spawn)")
+print("  - LocalPlayer/Camera nil guards")
+print("  - GUI/input/loop init pcall-wrapped with warn()")
+print("  F1=Aimbot | F2=ESP | F3=Silent | F4=Trigger | F5=Menu | F6=Wall | F7=Hide Menu")
+print("  FULL UNLOAD (console only): _G.__V94OPSYX_CL()")
+print(string.rep("=", 50))
