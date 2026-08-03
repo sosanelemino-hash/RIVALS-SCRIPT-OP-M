@@ -777,7 +777,7 @@ local function cg()
     main.Name = mn; main.Size = UDim2.new(0, 210, 0, 300)
     -- FIX: was (1, -500) which clips on smaller windows; KEYS button was
     -- cut off too (288px of a 290px frame). Frame is now 300px tall.
-    main.Position = UDim2.new(1, -230, 0, 70)
+    main.Position = UDim2.new(1, -490, 0, 70)
     main.BackgroundColor3 = Color3.fromRGB(8, 8, 12); main.BackgroundTransparency = 0.12
     main.BorderSizePixel = 0; main.Active = true; main.Draggable = true; main.Parent = sg
     pcall(function()
@@ -918,7 +918,7 @@ local function cg()
     -- IGNORE panel (Frame-based + search bar + scroll buttons)
     local igPanel = Instance.new("Frame")
     igPanel.Name = bn; igPanel.Size = UDim2.new(0, 230, 0, 500)
-    igPanel.Position = UDim2.new(1, -465, 0, 70)
+    igPanel.Position = UDim2.new(1, -725, 0, 70)
     igPanel.BackgroundColor3 = Color3.fromRGB(8, 8, 12); igPanel.BackgroundTransparency = 0.12
     igPanel.BorderSizePixel = 0; igPanel.Active = true; igPanel.Draggable = true
     igPanel.Visible = false; igPanel.Parent = sg
