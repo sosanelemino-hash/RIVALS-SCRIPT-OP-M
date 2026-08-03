@@ -152,7 +152,7 @@ local SI = {}
 -- ============================================================
 -- HOLD TOGGLE + IGNORE LIST
 -- ============================================================
-local holdToAimEnabled = true
+local holdToAimEnabled = false
 local IGNORE = {}
 local function isIgnored(pl)
     return IGNORE[pl] == true
