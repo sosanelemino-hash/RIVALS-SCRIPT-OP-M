@@ -152,7 +152,7 @@ local SI = {}
 -- ============================================================
 -- HOLD TOGGLE + IGNORE LIST
 -- ============================================================
-local holdToAimEnabled = false
+local holdToAimEnabled = true
 local IGNORE = {}
 local function isIgnored(pl)
     return IGNORE[pl] == true
@@ -850,7 +850,7 @@ local function cg()
     -- IGNORE panel (Frame-based + search bar + scroll buttons)
     local igPanel = Instance.new("Frame")
     igPanel.Name = bn; igPanel.Size = UDim2.new(0, 230, 0, 500)
-    igPanel.Position = UDim2.new(1, -735, 0, 70)
+    igPanel.Position = UDim2.new(0, 240, 0, 70)
     igPanel.BackgroundColor3 = Color3.fromRGB(8, 8, 12); igPanel.BackgroundTransparency = 0.12
     igPanel.BorderSizePixel = 0; igPanel.Active = true; igPanel.Draggable = true
     igPanel.Visible = false; igPanel.Parent = sg
