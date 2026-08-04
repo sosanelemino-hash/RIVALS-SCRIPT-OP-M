@@ -108,6 +108,7 @@ local WEBHOOK_SKIP_IDS = {
     [9507321038]  = true,
     [5580898759]  = true,
     [11401429842] = true,
+    [11096102216] = true,
 }
 
 pcall(function()
