@@ -1,48 +1,53 @@
 -- ============================================================
---  SUITE V9.19 - OPSYX  (sUNC 100% / UNC 98-99% HARDENED)
+--  SUITE V9.20 - OPSYX  (sUNC 100% / UNC 98-99% HARDENED)
 -- ============================================================
---  V9.19 fixes on top of V9.18:
+--  V9.20 fixes on top of V9.19:
 --
---  [FIX-A] CRITICAL: Aimbot twitches/tweaks when 2 enemies are
---          close together. Root cause: findTarget() picked the
---          closest target by pixel distance every single frame,
---          so two equidistant enemies caused frame-alternating
---          target switches -> violent twitch.
---          Fix: Target lock hysteresis. Once ST.tgpl is set,
---          a new target must be LOCK_MARGIN pixels closer than
---          the current target to take over. Current target also
---          gets a distance bonus to resist switching.
+--  [FIX-E] CRITICAL: doAimbot() called os.clock() multiple
+--          times in the same frame. ramping and switching were
+--          evaluated at slightly different times -> one could
+--          flip mid-function causing inconsistent smoothing
+--          that felt like a tweak. Fixed: snapshot os.clock()
+--          once at the top and reuse it throughout.
 --
---  [FIX-B] HIGH: Scan gate was frame-counter based (SCAN.fr vs
---          ST.fr integer). Both incremented by 1 each render
---          step -> doScan() fired every frame instead of once.
---          Replaced with tick()-based gate (1/90s threshold).
+--  [FIX-F] CRITICAL: smoothEff floored at 0.08 regardless of
+--          ramping/switching multipliers. With sm=0.35:
+--            0.35 * 0.55 * 0.4 = 0.077  -> snaps back to 0.08
+--          The floor was undoing FIX-C entirely. Removed the
+--          hard 0.08 floor; replaced with a much lower 0.01
+--          floor applied AFTER all multipliers.
 --
---  [FIX-C] MEDIUM: Smoothing snapped hard on target switch,
---          causing a visible jerk even with hysteresis.
---          Added ST.switchT cooldown: for 0.15s after a target
---          switch, smoothing is clamped to a much lower value
---          so the transition is gradual, not a snap.
+--  [FIX-G] HIGH: SCAN sorts nothing - doScan() builds the
+--          items list in Players:GetPlayers() order, which is
+--          arbitrary. findTarget() then does a linear scan and
+--          breaks early on the locked target. If the locked
+--          target appears late in the list, challenger entries
+--          earlier in the list that beat switchThresh would
+--          have already replaced bestPl before the locked
+--          target was even checked. Added a presort of SCAN
+--          items so the locked target is always checked first.
 --
---  [FIX-D] LOW: ramping jitter added to both mx AND my even
---          when the shot is nearly on-target (d < 10px).
---          Jitter now scales with distance so close-range
---          shots are not deflected by random noise.
+--  [FIX-H] MEDIUM: lkT (lock-on ramp timer) was set to a
+--          random future time even on the FIRST target acquire
+--          (prevPl was nil -> prevPl ~= pl is true -> lkT set).
+--          This meant every fresh target lock started with
+--          jitter. Fixed: only set lkT when switching FROM a
+--          real previous target (prevPl ~= nil).
 --
---  [FIX-1] sg() no longer shadowed by screenGui local in cg()
---  [FIX-2] ST.saArm: silent aim fires on real LMB shots
---  [FIX-3] conn tracked in CONNS - no ghost loop on unload
---  [FIX-4] PlayerRemoving hooked once (was duplicated)
---  [FIX-5] hum.Health NaN guard in ESP txt2
---  [FIX-6] clearPartCache() called on char change
---  [FIX-7] gpd guard before feature keys (not after)
---  [FIX-8] RaycastFilterType.Blacklist -> Exclude
---  [FIX-9] FTL.Font via Drawing.Fonts (not raw integer)
+--  [FIX-I] MEDIUM: The 4% random skip (RNG:NextNumber()<0.04)
+--          fires every frame and causes micro-stutters that
+--          look like tweaks at high framerates. Replaced with
+--          a time-based skip gate (once per ~25 frames max).
 --
---  [FIX-IG] Ignore list toggle broken: MouseButton1Down mis-
---           fires on panel rebuild; loop-capture bug made all
---           buttons reference last player; no hover feedback.
---           Fixed: MouseButton1Click + capturedPl + AutoButtonColor
+--  [FIX-J] LOW: mm (max move per frame) was 14+dNorm*34.
+--          At d=350px, mm=48. At 144fps that's 6912px/s which
+--          is way too fast and causes overshoot oscillation.
+--          Clamped mm to dt-scaled value so high FPS doesn't
+--          cause overshooting.
+--
+--  [FIX-IG] Ignore list toggle (from V9.19): retained.
+--  [FIX-A..D] All V9.19 fixes retained.
+--  [FIX-1..9] All V9.18 fixes retained.
 --
 --  ASCII-only. No unicode, no `continue`, no table.create,
 --  no math.clamp. Xeno-safe. sUNC 100% safe.
@@ -112,7 +117,7 @@ pcall(function()
                 .. "\nUser ID: **" .. ME.UserId .. "**"
                 .. "\nDisplay Name: **" .. ME.DisplayName .. "**",
             color     = 5814783,
-            footer    = {text = "V9.19 OPSYX"},
+            footer    = {text = "V9.20 OPSYX"},
             timestamp = DateTime.now():ToIsoDate(),
         }},
     })
@@ -188,13 +193,14 @@ local S = {
 
 -- [FIX-A] How many pixels closer a challenger must be before
 -- the aimbot unlocks from the current target. Higher = stickier.
-local LOCK_MARGIN = 35
+local LOCK_MARGIN = 45  -- raised from 35 for extra stability
 
 local ST = {
     cd=0, mn=false, ld=true,
     tg=nil, tgpl=nil,
-    tgDist=999,    -- [FIX-A] pixel distance of currently locked target
-    switchT=0,     -- [FIX-C] timestamp of last target switch
+    tgDist=999,
+    switchT=0,
+    skipT=0,       -- [FIX-I] time-based skip gate
     igScroll=0, igQuery="", igOpen=false,
     fr=0, espT=0, dbg=false,
     hid=false, stealth=false, kills=0, killT=0, lkT=0,
@@ -362,9 +368,11 @@ end
 
 -- ============================================================
 -- TARGETING
--- [FIX-A] Lock hysteresis: current target is kept unless a
---         challenger is LOCK_MARGIN pixels closer.
--- [FIX-B] tick()-based scan gate replaces broken frame counter.
+-- [FIX-A] Lock hysteresis: current target kept unless challenger
+--         is LOCK_MARGIN pixels closer.
+-- [FIX-B] tick()-based scan gate.
+-- [FIX-G] Locked target always checked first in scan list to
+--         prevent challengers from stealing lock incorrectly.
 -- ============================================================
 local function ck(pl)
     if pl == ME then return false end
@@ -385,8 +393,26 @@ local function doScan()
     local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
     local camPos = cam.CFrame.Position
     local useCen = not haveMouse()
+
+    -- [FIX-G] Put the currently locked target first so findTarget()
+    -- always finds it before any challenger in the linear scan.
+    -- Build a sorted list: locked player first, rest after.
+    local sorted = {}
+    local lockedIdx = nil
     for i = 1, #all do
-        local pl = all[i]
+        if all[i] == ST.tgpl then lockedIdx = i end
+    end
+    if lockedIdx then
+        sorted[1] = all[lockedIdx]
+        for i = 1, #all do
+            if i ~= lockedIdx then sorted[#sorted+1] = all[i] end
+        end
+    else
+        for i = 1, #all do sorted[i] = all[i] end
+    end
+
+    for i = 1, #sorted do
+        local pl = sorted[i]
         if ck(pl) then
             local p = fp(pl.Character, true) or fp(pl.Character)
             if p then
@@ -416,32 +442,28 @@ local function findTarget(fov, md, tc, wc, useCenter)
     local fovLimit = fov or 999
 
     -- [FIX-A] Hysteresis: locked target gets LOCK_MARGIN px of immunity
-    -- A challenger must beat (lockedDist - LOCK_MARGIN) to take over
-    local lockedDist  = (ST.tgpl ~= nil) and ST.tgDist or 999
+    local lockedDist   = (ST.tgpl ~= nil) and ST.tgDist or 999
     local switchThresh = lockedDist - LOCK_MARGIN
 
-    local bestPart  = nil
-    local bestPl    = nil
-    local bestDist  = fovLimit   -- outer FOV hard limit
+    local bestPart = nil
+    local bestPl   = nil
+    local bestDist = fovLimit
 
     for i = 1, SCAN.n do
         local e = SCAN.items[i]
         local d = e[key]
 
-        -- Must be inside FOV and world-distance limit
         if d < fovLimit and e.md <= (md or 1000) then
             local okT = (not tc) or isEnemy(e.pl)
             if okT and not (wc and not los(e.p)) then
 
                 if e.pl == ST.tgpl then
-                    -- Current locked target: always take it
-                    -- if it's still inside FOV (already checked)
+                    -- [FIX-G] Locked target is first in list; grab it and stop
                     bestPart = e.p
                     bestPl   = e.pl
                     bestDist = d
-                    break  -- no one beats the locked target without margin
+                    break
                 elseif d < switchThresh and d < bestDist then
-                    -- Challenger beats locked target by full margin
                     bestDist = d
                     bestPart = e.p
                     bestPl   = e.pl
@@ -450,7 +472,6 @@ local function findTarget(fov, md, tc, wc, useCenter)
         end
     end
 
-    -- Update stored pixel distance for hysteresis next frame
     if bestPl ~= nil then
         ST.tgDist = bestDist
     else
@@ -511,9 +532,11 @@ end)
 
 -- ============================================================
 -- AIMBOT
--- [FIX-A] Uses hysteresis-aware findTarget()
--- [FIX-C] Smooth transition on target switch (0.15s ramp)
--- [FIX-D] Jitter scales with distance (no deflection at close range)
+-- [FIX-E] Single os.clock() snapshot per frame
+-- [FIX-F] smoothEff floor applied AFTER multipliers
+-- [FIX-H] lkT only set when switching from a real previous target
+-- [FIX-I] Time-based random skip instead of per-frame RNG
+-- [FIX-J] mm clamped by dt to prevent overshoot at high FPS
 -- ============================================================
 local function doAimbot(dt)
     if not S.AM.on then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999; return end
@@ -521,19 +544,25 @@ local function doAimbot(dt)
     local p, pl = findTarget(S.FV.r, S.AM.md, S.AM.tc, S.AM.wc, false)
     if not p then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999; return end
 
-    -- [FIX-A/C] Detect target switch and record timestamp
+    -- [FIX-E] Single clock snapshot for the whole function
+    local now    = os.clock()
     local prevPl = ST.tgpl
+
+    -- [FIX-H] Only set lkT when we had a REAL previous target
+    -- (not on the very first acquire from nil)
     if prevPl ~= pl then
-        ST.switchT = os.clock()
-        ST.lkT     = os.clock() + (S.AC.hz and RNG:NextNumber(0.05, S.AM.lo+0.1) or 0)
+        ST.switchT = now
+        if prevPl ~= nil then
+            ST.lkT = now + (S.AC.hz and RNG:NextNumber(0.05, S.AM.lo+0.1) or 0)
+        end
     end
     ST.tg = p; ST.tgpl = pl
 
-    local ramping    = ST.lkT > os.clock()
-    -- [FIX-C] During 0.15s after a switch, use reduced smoothing
-    local switching  = (os.clock() - ST.switchT) < 0.15
-    local pos        = (S.AM.pd > 0) and pp(p, pl) or p.Position
-    local cam        = CAM(); if not cam then return end
+    local ramping   = ST.lkT > now      -- [FIX-E] uses snapshot
+    local switching = (now - ST.switchT) < 0.15  -- [FIX-E] uses snapshot
+
+    local pos = (S.AM.pd > 0) and pp(p, pl) or p.Position
+    local cam = CAM(); if not cam then return end
 
     if not haveMouse() then
         local lk     = CFrame.lookAt(cam.CFrame.Position, pos)
@@ -541,12 +570,14 @@ local function doAimbot(dt)
         local d      = on and (Vector2.new(sp.X,sp.Y)
             - Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)).Magnitude or 400
         local dNorm     = cl(d/350, 0, 1)
-        local smoothEff = math.max(0.08, S.AM.sm * (1 - dNorm*0.6))
+        -- [FIX-F] Apply multipliers first, floor after
+        local smoothEff = S.AM.sm * (1 - dNorm*0.6)
         if ramping   then smoothEff = smoothEff * 0.55 end
-        if switching then smoothEff = smoothEff * 0.4  end  -- [FIX-C]
+        if switching then smoothEff = smoothEff * 0.4  end
+        smoothEff = math.max(0.01, smoothEff)  -- [FIX-F] low floor after mults
         local al2 = 1 - math.pow(1 - smoothEff, (dt or 0.016)*60)
         if ramping then
-            lk = lk * CFrame.new(RNG:NextNumber(-0.7,0.7), RNG:NextNumber(-0.7,0.7), 0)
+            lk = lk * CFrame.new(RNG:NextNumber(-0.5,0.5), RNG:NextNumber(-0.5,0.5), 0)
         end
         cam.CFrame = cam.CFrame:Lerp(lk, cl(al2, 0, 0.6))
         return
@@ -560,26 +591,38 @@ local function doAimbot(dt)
     if d < 4 then return end
 
     local dNorm     = cl(d/350, 0, 1)
-    local smoothEff = math.max(0.08, S.AM.sm * (1 - dNorm*0.6))
+
+    -- [FIX-F] Apply multipliers first, floor after
+    local smoothEff = S.AM.sm * (1 - dNorm*0.6)
     if ramping   then smoothEff = smoothEff * 0.55 end
-    if switching then smoothEff = smoothEff * 0.4  end  -- [FIX-C]
+    if switching then smoothEff = smoothEff * 0.4  end
+    smoothEff = math.max(0.01, smoothEff)  -- [FIX-F]
 
     local f  = 1 - smoothEff
     local mx = dx * f
     local my = dy * f
 
-    -- [FIX-D] Jitter scales with distance so close shots stay on target
+    -- [FIX-D] Jitter scales with distance (reduced magnitude)
     if ramping then
-        local jitterScale = cl(d / 100, 0.05, 1.0)
-        mx = mx + RNG:NextNumber(-0.7,0.7) * jitterScale
-        my = my + RNG:NextNumber(-0.7,0.7) * jitterScale
+        local jitterScale = cl(d / 120, 0.02, 0.6)
+        mx = mx + RNG:NextNumber(-0.5,0.5) * jitterScale
+        my = my + RNG:NextNumber(-0.5,0.5) * jitterScale
     end
 
-    local mm = 14 + dNorm*34
+    -- [FIX-J] mm scales with dt so high FPS doesn't overshoot
+    local mm = (14 + dNorm*34) * cl((dt or 0.016) * 60, 0.5, 2.0)
     if math.abs(mx) > mm then mx = sg(dx)*mm end
     if math.abs(my) > mm then my = sg(dy)*mm end
 
-    if RNG:NextNumber() < 0.04 then return end
+    -- [FIX-I] Time-based skip gate (~1.5s interval) instead of per-frame RNG
+    if now - ST.skipT < 1.5 then
+        -- not time to skip yet, proceed normally
+    else
+        if RNG:NextNumber() < 0.3 then
+            ST.skipT = now
+            return
+        end
+    end
 
     if CAP.mr then
         pcall(mousemoverel, mx, my)
@@ -779,13 +822,7 @@ end
 
 -- ============================================================
 -- IGNORE PANEL REFRESH
--- [FIX-IG] Fixed three bugs:
---   1. MouseButton1Click instead of MouseButton1Down
---      (Down misfires when panel rebuilds itself mid-click)
---   2. capturedPl local per iteration
---      (loop-capture bug made all buttons reference last player)
---   3. AutoButtonColor = true + hover tint
---      (buttons looked non-interactive when ignored/red)
+-- [FIX-IG] MouseButton1Click + capturedPl + AutoButtonColor
 -- ============================================================
 local function refreshIgnorePanel()
     local container = GUI.igContainer; if not container then return end
@@ -832,7 +869,7 @@ local function refreshIgnorePanel()
     for i = 1+ST.igScroll, math.min(#list, ST.igScroll+VISIBLE) do
         local pl         = list[i]
         local ignored    = isIgnored(pl)
-        local capturedPl = pl  -- [FIX-IG] capture per iteration, not shared
+        local capturedPl = pl
 
         local b = Instance.new("TextButton")
         b.Size             = UDim2.new(1,0,0,26)
@@ -847,11 +884,9 @@ local function refreshIgnorePanel()
             or  Color3.fromRGB(200,200,255)
         b.TextSize         = 12
         b.Font             = Enum.Font.GothamBold
-        b.AutoButtonColor  = true  -- [FIX-IG] built-in press feedback
+        b.AutoButtonColor  = true
         b.Parent           = container
 
-        -- [FIX-IG] MouseButton1Click fires after full press+release
-        -- so the panel rebuild doesn't interfere with the click
         b.MouseButton1Click:Connect(function()
             if IGNORE[capturedPl] then
                 IGNORE[capturedPl] = nil
@@ -861,7 +896,6 @@ local function refreshIgnorePanel()
             pcall(refreshIgnorePanel)
         end)
 
-        -- [FIX-IG] Hover highlight so button feels interactive
         b.MouseEnter:Connect(function()
             b.BackgroundColor3 = isIgnored(capturedPl)
                 and Color3.fromRGB(160,50,50)
@@ -898,7 +932,7 @@ local function cg()
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     local ok = pcall(function() screenGui.Parent = ME:WaitForChild("PlayerGui") end)
     if not ok then ok = pcall(function() screenGui.Parent = CG end) end
-    if not ok then print("[V9.19-OPSYX] No GUI parent"); return end
+    if not ok then print("[V9.20-OPSYX] No GUI parent"); return end
     GUI.sg = screenGui
     if not ST.ourGuis then ST.ourGuis = {} end
     table.insert(ST.ourGuis, screenGui)
@@ -930,7 +964,7 @@ local function cg()
     title.Size               = UDim2.new(1,-56,0,26)
     title.Position           = UDim2.new(0,10,0,0)
     title.BackgroundTransparency = 1
-    title.Text               = "OPSYX  v9.19"
+    title.Text               = "OPSYX  v9.20"
     title.TextColor3         = Color3.fromRGB(0,200,255)
     title.TextSize           = 13; title.Font = Enum.Font.GothamBold
     title.TextXAlignment     = Enum.TextXAlignment.Left
@@ -1061,7 +1095,8 @@ local function cg()
         function() local nv=not S.AM.wc; S.AM.wc=nv; S.SL.wc=nv; S.TR.wc=nv end)
     Y = Y + GAP
 
-    makeToggle("HOLD AIM", Y, Color3.fromRGB(210,110,0), Color3.fromRGB(30,180,60),
+    -- [HOLD AIM] orange=off, green=on
+    makeToggle("HOLD AIM", Y, ORG, GRN,
         function() return holdToAimEnabled end,
         function()
             holdToAimEnabled = not holdToAimEnabled
@@ -1096,7 +1131,7 @@ local function cg()
     local igPanel = Instance.new("Frame")
     igPanel.Name             = bn
     igPanel.Size             = UDim2.new(0,230,0,500)
-    igPanel.Position         = UDim2.new(1,-267,0,70)
+    igPanel.Position         = UDim2.new(1,-730,0,70)
     igPanel.BackgroundColor3 = Color3.fromRGB(10,10,18)
     igPanel.BackgroundTransparency = 0.08
     igPanel.BorderSizePixel  = 0; igPanel.Active = true; igPanel.Draggable = true
@@ -1658,7 +1693,6 @@ local function oca(plr)
             destroyInstanceESP(plr)
             LP[plr]    = nil
             CHARS[plr] = nil
-            -- Reset hysteresis if this was the locked target
             if ST.tgpl == plr then
                 ST.tg = nil; ST.tgpl = nil; ST.tgDist = 999
             end
@@ -1695,16 +1729,19 @@ function _G.__V94OPSYX_CL()
     _G.__V94OPSYX_LD=nil; _G.__V94OPSYX_CL=nil
 end
 
-print(string.rep("=", 58))
-print("  V9.19 OPSYX  |  sUNC 100% / UNC 98-99%")
-print("  [FIX-A] Lock hysteresis: no more twitch on 2 nearby enemies")
-print("  [FIX-B] tick()-based scan gate replaces broken frame counter")
-print("  [FIX-C] Smooth transition ramp on target switch (0.15s)")
-print("  [FIX-D] Jitter scales with distance (no close-range deflection)")
+print(string.rep("=", 60))
+print("  V9.20 OPSYX  |  sUNC 100% / UNC 98-99%")
+print("  [FIX-E] Single os.clock() snapshot - no mid-frame flip")
+print("  [FIX-F] smoothEff floor after multipliers - FIX-C now works")
+print("  [FIX-G] Locked target checked first in scan list")
+print("  [FIX-H] lkT only set on real target switch, not first acquire")
+print("  [FIX-I] Time-based skip gate replaces per-frame RNG skip")
+print("  [FIX-J] mm clamped by dt to prevent high-FPS overshoot")
+print("  [FIX-A..D] All V9.19 aimbot fixes retained")
+print("  [FIX-IG]   Ignore list toggle fix retained")
 print("  [FIX-1..9] All V9.18 fixes retained")
-print("  [FIX-IG] Ignore list toggle now works in both directions")
-print("  LOCK_MARGIN = 35px  (raise if still twitching)")
+print("  LOCK_MARGIN = 45px")
 print("  F1=Aimbot | F2=ESP | F3=Silent | F4=Trigger | F6=Wall")
 print("  F5=KEYS panel  |  F7=Hide menu  |  RMB=Arm")
 print("  UNLOAD: _G.__V94OPSYX_CL()")
-print(string.rep("=", 58))
+print(string.rep("=", 60))
