@@ -39,6 +39,11 @@
 --  [FIX-8] RaycastFilterType.Blacklist -> Exclude
 --  [FIX-9] FTL.Font via Drawing.Fonts (not raw integer)
 --
+--  [FIX-IG] Ignore list toggle broken: MouseButton1Down mis-
+--           fires on panel rebuild; loop-capture bug made all
+--           buttons reference last player; no hover feedback.
+--           Fixed: MouseButton1Click + capturedPl + AutoButtonColor
+--
 --  ASCII-only. No unicode, no `continue`, no table.create,
 --  no math.clamp. Xeno-safe. sUNC 100% safe.
 -- ============================================================
@@ -772,6 +777,16 @@ local function toggleKeysPanel()
     GUI.setPanel.Visible = ST.mn
 end
 
+-- ============================================================
+-- IGNORE PANEL REFRESH
+-- [FIX-IG] Fixed three bugs:
+--   1. MouseButton1Click instead of MouseButton1Down
+--      (Down misfires when panel rebuilds itself mid-click)
+--   2. capturedPl local per iteration
+--      (loop-capture bug made all buttons reference last player)
+--   3. AutoButtonColor = true + hover tint
+--      (buttons looked non-interactive when ignored/red)
+-- ============================================================
 local function refreshIgnorePanel()
     local container = GUI.igContainer; if not container then return end
     local q = ""
@@ -815,25 +830,60 @@ local function refreshIgnorePanel()
 
     local y = 4
     for i = 1+ST.igScroll, math.min(#list, ST.igScroll+VISIBLE) do
-        local pl      = list[i]
-        local ignored = isIgnored(pl)
-        local b       = Instance.new("TextButton")
+        local pl         = list[i]
+        local ignored    = isIgnored(pl)
+        local capturedPl = pl  -- [FIX-IG] capture per iteration, not shared
+
+        local b = Instance.new("TextButton")
         b.Size             = UDim2.new(1,0,0,26)
         b.Position         = UDim2.new(0,0,0,y)
-        b.BackgroundColor3 = ignored and Color3.fromRGB(100,0,0) or Color3.fromRGB(40,40,60)
+        b.BackgroundColor3 = ignored
+            and Color3.fromRGB(120,30,30)
+            or  Color3.fromRGB(40,40,60)
         b.BorderSizePixel  = 0
-        b.Text             = pl.Name
-        b.TextColor3       = ignored and Color3.fromRGB(255,100,100) or Color3.fromRGB(200,200,255)
-        b.TextSize         = 12; b.Font = Enum.Font.GothamBold
+        b.Text             = (ignored and "[X] " or "      ") .. pl.Name
+        b.TextColor3       = ignored
+            and Color3.fromRGB(255,120,120)
+            or  Color3.fromRGB(200,200,255)
+        b.TextSize         = 12
+        b.Font             = Enum.Font.GothamBold
+        b.AutoButtonColor  = true  -- [FIX-IG] built-in press feedback
         b.Parent           = container
-        b.MouseButton1Down:Connect(function()
-            IGNORE[pl] = IGNORE[pl] and nil or true
-            refreshIgnorePanel()
+
+        -- [FIX-IG] MouseButton1Click fires after full press+release
+        -- so the panel rebuild doesn't interfere with the click
+        b.MouseButton1Click:Connect(function()
+            if IGNORE[capturedPl] then
+                IGNORE[capturedPl] = nil
+            else
+                IGNORE[capturedPl] = true
+            end
+            pcall(refreshIgnorePanel)
         end)
+
+        -- [FIX-IG] Hover highlight so button feels interactive
+        b.MouseEnter:Connect(function()
+            b.BackgroundColor3 = isIgnored(capturedPl)
+                and Color3.fromRGB(160,50,50)
+                or  Color3.fromRGB(65,65,90)
+        end)
+        b.MouseLeave:Connect(function()
+            b.BackgroundColor3 = isIgnored(capturedPl)
+                and Color3.fromRGB(120,30,30)
+                or  Color3.fromRGB(40,40,60)
+        end)
+
         y = y + ROW
     end
-    if GUI.igUp   then GUI.igUp.BackgroundColor3   = ST.igScroll > 0   and Color3.fromRGB(60,40,90) or Color3.fromRGB(30,25,40) end
-    if GUI.igDown then GUI.igDown.BackgroundColor3 = ST.igScroll < MAX and Color3.fromRGB(60,40,90) or Color3.fromRGB(30,25,40) end
+
+    if GUI.igUp   then
+        GUI.igUp.BackgroundColor3   = ST.igScroll > 0
+            and Color3.fromRGB(60,40,90) or Color3.fromRGB(30,25,40)
+    end
+    if GUI.igDown then
+        GUI.igDown.BackgroundColor3 = ST.igScroll < MAX
+            and Color3.fromRGB(60,40,90) or Color3.fromRGB(30,25,40)
+    end
 end
 
 -- ============================================================
@@ -1011,7 +1061,7 @@ local function cg()
         function() local nv=not S.AM.wc; S.AM.wc=nv; S.SL.wc=nv; S.TR.wc=nv end)
     Y = Y + GAP
 
-    makeToggle("HOLD AIM", Y, Color3.fromRGB(100,0,100), Color3.fromRGB(120,0,180),
+    makeToggle("HOLD AIM", Y, Color3.fromRGB(210,110,0), Color3.fromRGB(30,180,60),
         function() return holdToAimEnabled end,
         function()
             holdToAimEnabled = not holdToAimEnabled
@@ -1046,7 +1096,7 @@ local function cg()
     local igPanel = Instance.new("Frame")
     igPanel.Name             = bn
     igPanel.Size             = UDim2.new(0,230,0,500)
-    igPanel.Position         = UDim2.new(1,-730,0,70)
+    igPanel.Position         = UDim2.new(1,-267,0,70)
     igPanel.BackgroundColor3 = Color3.fromRGB(10,10,18)
     igPanel.BackgroundTransparency = 0.08
     igPanel.BorderSizePixel  = 0; igPanel.Active = true; igPanel.Draggable = true
@@ -1652,6 +1702,7 @@ print("  [FIX-B] tick()-based scan gate replaces broken frame counter")
 print("  [FIX-C] Smooth transition ramp on target switch (0.15s)")
 print("  [FIX-D] Jitter scales with distance (no close-range deflection)")
 print("  [FIX-1..9] All V9.18 fixes retained")
+print("  [FIX-IG] Ignore list toggle now works in both directions")
 print("  LOCK_MARGIN = 35px  (raise if still twitching)")
 print("  F1=Aimbot | F2=ESP | F3=Silent | F4=Trigger | F6=Wall")
 print("  F5=KEYS panel  |  F7=Hide menu  |  RMB=Arm")
