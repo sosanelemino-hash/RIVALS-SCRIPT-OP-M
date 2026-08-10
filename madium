@@ -98,10 +98,6 @@ if not REQ and type(request)      == "function" then REQ, REQ_NAME = request,   
 if not REQ and type(http_request) == "function" then REQ, REQ_NAME = http_request,   "http_request"  end
 
 local WEBHOOK_SKIP_IDS = {
-    [11273358112]=true, [6171833357]=true,
-    [2847546439]=true,  [10732068344]=true,
-    [9507321038]=true,  [5580898759]=true,
-    [11401429842]=true,
 }
 
 pcall(function()
