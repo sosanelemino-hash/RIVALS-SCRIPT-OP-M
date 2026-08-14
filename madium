@@ -1,41 +1,44 @@
 -- ============================================================
---  SUITE V9.22 - OPSYX  (sUNC 100% / UNC 98-99% HARDENED)
+--  SUITE V9.27 - OPSYX  (sUNC 100% / UNC 98-99% HARDENED)
 -- ============================================================
---  V9.22 fixes on top of V9.21 (user-pasted version):
+--  V9.27 CHANGES on top of V9.26:
 --
---  [FIX-N] FOV circle and lock tag were hidden when F7
---          hid the menu (ST.hid flag was included in their
---          show conditions). FOV circle should stay visible
---          regardless of menu visibility - removed ST.hid
---          from both the FC and FTL show conditions.
+--  [CLEAN]    WEBHOOK REMOVED entirely. No Discord URL, no
+--             HttpService calls, no data sent anywhere.
+--             HttpService import also removed.
 --
---  [FIX-K] CRITICAL: WEBHOOK_SKIP_IDS was cleared to {} in
---          the user's paste. Every player including the script
---          owner now gets logged. Restored the original IDs.
+--  [FIX-IG1]  IGNORE LIST now sorts by proximity to local
+--             player. Closest player is always first in the
+--             list. Distance badge shown on each row (e.g.
+--             "12 m"). List re-sorts live every refresh tick
+--             (~0.25s) so it stays accurate as players move.
+--             Players with no loaded character (distance
+--             unknown) fall to the bottom, sorted by name.
 --
---  [FIX-L] HIGH: syn referenced as a bare global without pcall.
---          On executors where syn is not defined this raises
---          "attempt to index nil value 'syn'" and crashes the
---          entire REQ block, meaning no HTTP fallback fires.
---          Wrapped in pcall so it degrades safely.
+--  [FIX-IG2]  Added a "SORT: NEAR" / "SORT: A-Z" toggle
+--             button inside the ignore panel header so the
+--             user can switch between proximity sort and
+--             alphabetical sort without leaving the panel.
 --
---  [FIX-M] HIGH: FIX-I skip gate logic was inverted and
---          created a detectable pattern. The empty "then" body
---          meant the skip ONLY fired once every 1.5s - giving
---          a perfectly smooth aim for 1.5s then one hard stutter
---          on a fixed cadence, which is more detectable than
---          the original 4% per-frame skip it replaced.
---          Replaced with a correct low-probability per-frame
---          skip (2% chance) with a minimum refire gap of 0.8s
---          so skips are random but not too frequent.
+--  [FIX-IG3]  Ignored players now show their distance too,
+--             so the user can tell who is nearby even when
+--             they're already on the list.
 --
---  [FIX-E..J] All V9.20 aimbot fixes retained.
---  [FIX-A..D] All V9.19 aimbot fixes retained.
---  [FIX-IG]   Ignore list toggle fix retained.
---  [FIX-1..9] All V9.18 fixes retained.
+--  [FIX-IG4]  Ignore panel now auto-refreshes every 0.25s
+--             while it is open (distance updates live).
+--             Previously it only refreshed on open or player
+--             join/leave.
 --
---  ASCII-only. No unicode, no `continue`, no table.create,
---  no math.clamp. Xeno-safe. sUNC 100% safe.
+--  [IMPROVE]  Ignore panel row height increased to 30px and
+--             distance badge added on the right side of each
+--             row in a muted color so it doesn't clutter the
+--             name.
+--
+--  [IMPROVE]  Panel header shows player count and "X ignored"
+--             count so the user always sees the state at a
+--             glance without opening the list.
+--
+--  All V9.26 + V9.25 fixes retained.
 -- ============================================================
 
 if _G.__V94OPSYX_LD then return end
@@ -49,7 +52,6 @@ local RS      = game:GetService("RunService")
 local UI      = game:GetService("UserInputService")
 local WS      = game:GetService("Workspace")
 local CG      = game:GetService("CoreGui")
-local H       = game:GetService("HttpService")
 
 local ME = Players.LocalPlayer
 if not ME then ME = Players.PlayerAdded:Wait() end
@@ -71,63 +73,41 @@ local tw  = (task and type(task.wait)  == "function") and task.wait
     or (type(wait)  == "function" and wait  or function() end)
 local tsp = (task and type(task.spawn) == "function") and task.spawn
     or (type(spawn) == "function" and spawn or function(f) f() end)
+local tdf = (task and type(task.defer) == "function") and task.defer
+    or tsp
 
 -- ============================================================
--- WEBHOOK
+-- FPS UNLOCK
 -- ============================================================
-local WEBHOOK_URL = "https://discord.com/api/webhooks/1492871681365246083/kXFsaKbdoqVLrxkxcSejYo5I_wnyWihjTVgEaJ6_lUWsKrPMj3_0To0iawSWuJNEkJB-"
+local FPS_TARGET = 0
 
--- [FIX-L] pcall wrapper so syn crash doesn't kill the REQ block
-local REQ, REQ_NAME
-pcall(function()
-    if syn and type(syn.request) == "function" then
-        REQ, REQ_NAME = syn.request, "syn.request"
-    end
-end)
-if not REQ and type(request)      == "function" then REQ, REQ_NAME = request,      "request"      end
-if not REQ and type(http_request) == "function" then REQ, REQ_NAME = http_request, "http_request" end
+local function applyFPSUnlock()
+    pcall(function() if type(setfpscap)    == "function" then setfpscap(FPS_TARGET) end end)
+    pcall(function() if type(fps_unlock)   == "function" then fps_unlock(FPS_TARGET == 0 and 9999 or FPS_TARGET) end end)
+    pcall(function() if syn and type(syn.fps_unlock) == "function" then syn.fps_unlock(FPS_TARGET == 0 and 9999 or FPS_TARGET) end end)
+    pcall(function() if Drawing and type(Drawing.setfpscap) == "function" then Drawing.setfpscap(FPS_TARGET) end end)
+    pcall(function() if type(executor_settings) == "table" then executor_settings.fps_cap = FPS_TARGET == 0 and 9999 or FPS_TARGET end end)
+end
 
--- [FIX-K] Restored skip IDs (were cleared to {} in user paste)
-local WEBHOOK_SKIP_IDS = {
-    [11273358112]=true, [6171833357]=true,
-    [2847546439]=true,  [10732068344]=true,
-    [9507321038]=true,  [5580898759]=true,
-    [11401429842]=true,
-}
+applyFPSUnlock()
+local function reapplyFPS() tw(0.5); applyFPSUnlock() end
 
-pcall(function()
-    if WEBHOOK_SKIP_IDS[ME.UserId] then return end
-    local MPS = game:GetService("MarketplaceService")
-    local gameName = "Unknown"
-    pcall(function() gameName = MPS:GetProductInfo(game.PlaceId).Name end)
-    local data = H:JSONEncode({
-        embeds = {{
-            title       = "Script Executed",
-            description = "Game: **" .. gameName .. "**"
-                .. "\nUser: **" .. ME.Name .. "**"
-                .. "\nUser ID: **" .. ME.UserId .. "**"
-                .. "\nDisplay Name: **" .. ME.DisplayName .. "**",
-            color     = 5814783,
-            footer    = {text = "V9.22 OPSYX"},
-            timestamp = DateTime.now():ToIsoDate(),
-        }},
-    })
-    local payload = {
-        Url     = WEBHOOK_URL,
-        Method  = "POST",
-        Headers = {["Content-Type"] = "application/json"},
-        Body    = data,
-    }
-    local ok = false
-    if REQ then ok = pcall(function() REQ(payload) end) end
-    if not ok then ok = pcall(function() H:RequestAsync(payload) end) end
-    if not ok then warn("[OPSYX] Webhook delivery failed") end
-end)
+-- ============================================================
+-- FPS COUNTER
+-- ============================================================
+local FPS_COUNT    = 0
+local FPS_SHOWN    = 0
+local FPS_TIMER    = os.clock()
+local FPS_INTERVAL = 0.5
+
+-- ============================================================
+-- WEBHOOK  [REMOVED - no external data collection]
+-- ============================================================
 
 -- ============================================================
 -- CAPABILITIES
 -- ============================================================
-local CAP = {d=false, mr=false, ma=false, c1=false, cp=false, cr=false, ia=false}
+local CAP = {d=false,mr=false,ma=false,c1=false,cp=false,cr=false,ia=false}
 pcall(function() CAP.d  = type(Drawing)       == "table"    end)
 pcall(function() CAP.mr = type(mousemoverel)  == "function" end)
 pcall(function() CAP.ma = type(mousemoveabs)  == "function" end)
@@ -149,54 +129,71 @@ end
 -- HELPERS
 -- ============================================================
 local function cl(v, lo, hi) return v < lo and lo or (v > hi and hi or v) end
-local function sg(x) return x > 0 and 1 or (x < 0 and -1 or 0) end
+local function sg(x)         return x > 0 and 1 or (x < 0 and -1 or 0) end
 
 local function rs(l)
     local t = {}
-    for i = 1, l or 16 do t[i] = string.char(math.random(97, 122)) end
+    for i = 1, l or 16 do t[i] = string.char(math.random(97,122)) end
     return table.concat(t)
 end
 
 local function rn(l)
-    local t    = {}
     local pool = "abcdefghijklmnopqrstuvwxyz0123456789"
     local p    = #pool
-    for i = 1, l or 8 do
-        local c = math.random(1, p)
-        t[i]    = pool:sub(c, c)
-    end
+    local t    = {}
+    for i = 1, l or 8 do local c = math.random(1,p); t[i] = pool:sub(c,c) end
     return table.concat(t)
 end
+
+local function safeFloor(v, fb)
+    if v ~= v or v == math.huge or v == -math.huge then return fb or 0 end
+    return math.floor(v + 0.5)
+end
+
+-- ============================================================
+-- COLOR CONSTANTS  [FIX-KB1 retained]
+-- ============================================================
+local C_RED = Color3.fromRGB(200, 40,  40)
+local C_GRN = Color3.fromRGB(30,  180, 60)
+local C_ORG = Color3.fromRGB(210, 110, 0)
+local C_BLU = Color3.fromRGB(30,  100, 220)
 
 -- ============================================================
 -- SETTINGS
 -- ============================================================
+local ESP_MAX_RANGE     = 2000
+local ESP_STEALTH_RANGE = 60
+local LOCK_MARGIN       = 45
+
 local S = {
     KB = {am="F1", es="F2", sl="F3", tr="F4", wc="F6"},
-    AM = {on=false, fov=100, sm=0.35, md=1000, pd=0.05, tc=true, wc=false, lo=0.15},
-    SL = {on=false, sm=0.3,           md=1000,           tc=true, wc=false, pd=0.05, sp=0.06},
-    TR = {on=false, dl=0.05,          md=1000, rd=true,  tc=true, wc=false, arm=false, hr=0.09},
-    ES = {on=false,           md=1000, sd=60,  tc=true,
+    AM = {on=false, sm=0.35, md=1000, pd=0.05, tc=true, wc=false, lo=0.15},
+    SL = {on=false, sm=0.3,  md=1000, tc=true, wc=false, pd=0.05, sp=0.06},
+    TR = {on=false, dl=0.05, md=1000, rd=true, tc=true,  wc=false, hr=0.09},
+    ES = {on=false, md=ESP_MAX_RANGE, sd=ESP_STEALTH_RANGE, tc=true,
           ce=Color3.fromRGB(255,60,60), ct=Color3.fromRGB(60,200,60)},
     FV = {on=true,  r=130, c=Color3.fromRGB(255,255,255), th=1.5, fl=false, tr=0.6},
     AC = {nm=true,  rg=9,  hz=true, cl=true, hi=true},
 }
 
-local LOCK_MARGIN = 45
-
 local ST = {
     cd=0, mn=false, ld=true,
-    tg=nil, tgpl=nil,
-    tgDist=999,
-    switchT=0,
-    skipT=0,
+    tg=nil, tgpl=nil, tgDist=999,
+    switchT=0, skipT=0,
     igScroll=0, igQuery="", igOpen=false,
-    fr=0, espT=0, dbg=false,
-    hid=false, stealth=false, kills=0, killT=0, lkT=0,
-    arm=false,
-    saArm=false,
-    _rb=nil,
+    igSortNear=true,   -- [FIX-IG2] true=proximity sort, false=alpha sort
+    igLastRefresh=0,   -- [FIX-IG4] timestamp of last auto-refresh
+    fr=0, espT=0,
+    hid=false,
+    stealth=false, kills=0, killT=0, lkT=0,
+    arm=false, saArm=false, _rb=nil,
+    holdReleased=false,
 }
+
+-- ============================================================
+-- PILLS registry [FIX-KB5 retained]
+-- ============================================================
+local PILLS = {}
 
 -- ============================================================
 -- CONNECTION TRACKING
@@ -214,31 +211,38 @@ local SI  = {}
 -- HOLD + IGNORE
 -- ============================================================
 local holdToAimEnabled = false
-local IGNORE = {}
+local IGNORE           = {}
 local function isIgnored(pl) return IGNORE[pl] == true end
 
 -- ============================================================
 -- KEY MAP
 -- ============================================================
 local EN = {
-    [Enum.KeyCode.F1] = "F1", [Enum.KeyCode.F2] = "F2",
-    [Enum.KeyCode.F3] = "F3", [Enum.KeyCode.F4] = "F4",
-    [Enum.KeyCode.F6] = "F6",
-    [Enum.UserInputType.MouseButton2] = "MouseButton2",
+    [Enum.KeyCode.F1]="F1",[Enum.KeyCode.F2]="F2",
+    [Enum.KeyCode.F3]="F3",[Enum.KeyCode.F4]="F4",
+    [Enum.KeyCode.F6]="F6",
+    [Enum.UserInputType.MouseButton2]="MouseButton2",
 }
 
 local function ef(n)
-    if not n then return nil end
+    if not n or n == "" then return nil end
     local ok, v = pcall(function() return Enum.KeyCode[n] end)
-    if ok then return v end
+    if ok and v and v ~= Enum.KeyCode.Unknown then return v end
     ok, v = pcall(function() return Enum.UserInputType[n] end)
-    return ok and v or nil
+    if ok and v and v ~= Enum.UserInputType.Unknown then return v end
+    return nil
 end
 
 local function mk(input, key)
     local target = ef(S.KB[key])
     if not target then return false end
-    return input.KeyCode == target or input.UserInputType == target
+    local ok, tc = pcall(function() return target.EnumType end)
+    if not ok then return false end
+    if tc == Enum.KeyCode then
+        return input.KeyCode == target
+    else
+        return input.UserInputType == target
+    end
 end
 
 local function isMouseBtn(input)
@@ -255,9 +259,13 @@ local PART_CACHE = {}
 local LOSC       = {}
 local CHARS      = {}
 
-local function clearPartCache()
-    PART_CACHE = {}
-    LOSC       = {}
+local function clearPartCache() PART_CACHE = {}; LOSC = {} end
+
+local function clearLOSCForChar(c)
+    if not c then return end
+    for part in pairs(LOSC) do
+        if part and part.Parent == c then LOSC[part] = nil end
+    end
 end
 
 local function fp(c, headOnly)
@@ -356,6 +364,23 @@ local function los(p)
 end
 
 -- ============================================================
+-- [FIX-IG1] PROXIMITY HELPER
+-- Returns distance from local player's root to another
+-- player's root. Returns math.huge if either has no character.
+-- ============================================================
+local function distToPlayer(pl)
+    local myChar = ME.Character
+    if not myChar then return math.huge end
+    local myRoot = fr(myChar)
+    if not myRoot then return math.huge end
+    local theirChar = pl.Character
+    if not theirChar then return math.huge end
+    local theirRoot = fr(theirChar)
+    if not theirRoot then return math.huge end
+    return (myRoot.Position - theirRoot.Position).Magnitude
+end
+
+-- ============================================================
 -- TARGETING
 -- ============================================================
 local function ck(pl)
@@ -365,8 +390,8 @@ local function ck(pl)
     return c and al(c)
 end
 
-local SCAN    = {t=-1, n=0, items={}}
-local SCAN_DT = 1 / 90
+local SCAN    = {t=-999, n=0, items={}}
+local SCAN_DT = 1/120
 
 local function doScan()
     local cam = CAM(); SCAN.n = 0
@@ -378,20 +403,13 @@ local function doScan()
     local camPos = cam.CFrame.Position
     local useCen = not haveMouse()
 
-    -- [FIX-G] Locked target always first in scan list
-    local sorted    = {}
-    local lockedIdx = nil
+    local sorted = {}
+    local lockedFirst = nil
     for i = 1, #all do
-        if all[i] == ST.tgpl then lockedIdx = i end
+        if all[i] == ST.tgpl then lockedFirst = all[i]
+        else sorted[#sorted+1] = all[i] end
     end
-    if lockedIdx then
-        sorted[1] = all[lockedIdx]
-        for i = 1, #all do
-            if i ~= lockedIdx then sorted[#sorted+1] = all[i] end
-        end
-    else
-        for i = 1, #all do sorted[i] = all[i] end
-    end
+    if lockedFirst then table.insert(sorted, 1, lockedFirst) end
 
     for i = 1, #sorted do
         local pl = sorted[i]
@@ -403,10 +421,9 @@ local function doScan()
                     n = n + 1
                     local e = SCAN.items[n]
                     if not e then e = {}; SCAN.items[n] = e end
-                    e.pl, e.p = pl, p
+                    e.pl = pl; e.p = p
                     e.cD = math.sqrt((sp.X-cx)^2 + (sp.Y-cy)^2)
-                    e.mD = useCen and e.cD
-                          or math.sqrt((sp.X-mx)^2 + (sp.Y-my)^2)
+                    e.mD = useCen and e.cD or math.sqrt((sp.X-mx)^2 + (sp.Y-my)^2)
                     e.md = (camPos - p.Position).Magnitude
                 end
             end
@@ -416,46 +433,33 @@ local function doScan()
 end
 
 local function findTarget(fov, md, tc, wc, useCenter)
-    local now = tick()
+    local now = os.clock()
     if now - SCAN.t > SCAN_DT then SCAN.t = now; doScan() end
 
-    local key      = useCenter and "cD" or "mD"
-    local fovLimit = fov or 999
+    local key        = useCenter and "cD" or "mD"
+    local fovLimit   = fov or 999
+    local lockedDist = (ST.tgpl ~= nil) and ST.tgDist or 999
+    local switchThr  = lockedDist - LOCK_MARGIN
 
-    local lockedDist   = (ST.tgpl ~= nil) and ST.tgDist or 999
-    local switchThresh = lockedDist - LOCK_MARGIN
-
-    local bestPart = nil
-    local bestPl   = nil
-    local bestDist = fovLimit
+    local bestPart, bestPl, bestDist = nil, nil, fovLimit
 
     for i = 1, SCAN.n do
         local e = SCAN.items[i]
         local d = e[key]
-
         if d < fovLimit and e.md <= (md or 1000) then
             local okT = (not tc) or isEnemy(e.pl)
             if okT and not (wc and not los(e.p)) then
                 if e.pl == ST.tgpl then
-                    bestPart = e.p
-                    bestPl   = e.pl
-                    bestDist = d
+                    bestPart = e.p; bestPl = e.pl; bestDist = d
                     break
-                elseif d < switchThresh and d < bestDist then
-                    bestDist = d
-                    bestPart = e.p
-                    bestPl   = e.pl
+                elseif d < switchThr and d < bestDist then
+                    bestDist = d; bestPart = e.p; bestPl = e.pl
                 end
             end
         end
     end
 
-    if bestPl ~= nil then
-        ST.tgDist = bestDist
-    else
-        ST.tgDist = 999
-    end
-
+    ST.tgDist = bestPl ~= nil and bestDist or 999
     return bestPart, bestPl
 end
 
@@ -489,7 +493,7 @@ pcall(function()
     FC.Radius       = S.FV.r
     FC.Color        = S.FV.c
     FC.Thickness    = S.FV.th
-    FC.NumSides     = 48
+    FC.NumSides     = 64
     FC.Filled       = S.FV.fl
     FC.Transparency = S.FV.tr
 end)
@@ -503,25 +507,33 @@ pcall(function()
     FTL.Size    = 13
     FTL.Center  = true
     FTL.Outline = true
-    FTL.Color   = Color3.fromRGB(255, 200, 0)
+    FTL.Color   = Color3.fromRGB(255,200,0)
     FTL.Text    = ""
     pcall(function() FTL.Font = Drawing.Fonts.UI end)
 end)
 
 -- ============================================================
+-- TARGET FLUSH
+-- ============================================================
+local function flushTarget()
+    ST.tg = nil; ST.tgpl = nil; ST.tgDist = 999
+end
+
+-- ============================================================
 -- AIMBOT
 -- ============================================================
 local function doAimbot(dt)
-    if not S.AM.on then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999; return end
+    if ST.holdReleased then
+        ST.holdReleased = false; flushTarget(); return
+    end
+    if not S.AM.on then flushTarget(); return end
 
     local p, pl = findTarget(S.FV.r, S.AM.md, S.AM.tc, S.AM.wc, false)
-    if not p then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999; return end
+    if not p then flushTarget(); return end
 
-    -- [FIX-E] Single clock snapshot
     local now    = os.clock()
     local prevPl = ST.tgpl
 
-    -- [FIX-H] Only ramp on real target switch, not first acquire
     if prevPl ~= pl then
         ST.switchT = now
         if prevPl ~= nil then
@@ -532,22 +544,20 @@ local function doAimbot(dt)
 
     local ramping   = ST.lkT > now
     local switching = (now - ST.switchT) < 0.15
-
-    local pos = (S.AM.pd > 0) and pp(p, pl) or p.Position
-    local cam = CAM(); if not cam then return end
+    local pos       = (S.AM.pd > 0) and pp(p, pl) or p.Position
+    local cam       = CAM(); if not cam then return end
 
     if not haveMouse() then
         local lk     = CFrame.lookAt(cam.CFrame.Position, pos)
         local sp, on = cam:WorldToViewportPoint(pos)
         local d      = on and (Vector2.new(sp.X,sp.Y)
             - Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)).Magnitude or 400
-        local dNorm     = cl(d/350, 0, 1)
-        -- [FIX-F] Floor after multipliers
-        local smoothEff = S.AM.sm * (1 - dNorm*0.6)
-        if ramping   then smoothEff = smoothEff * 0.55 end
-        if switching then smoothEff = smoothEff * 0.4  end
-        smoothEff = math.max(0.01, smoothEff)
-        local al2 = 1 - math.pow(1 - smoothEff, (dt or 0.016)*60)
+        local dNorm = cl(d/350, 0, 1)
+        local sm    = S.AM.sm * (1 - dNorm*0.6)
+        if ramping   then sm = sm * 0.55 end
+        if switching then sm = sm * 0.4  end
+        sm = math.max(0.01, sm)
+        local al2 = 1 - math.pow(1 - sm, (dt or 0.016)*60)
         if ramping then
             lk = lk * CFrame.new(RNG:NextNumber(-0.5,0.5), RNG:NextNumber(-0.5,0.5), 0)
         end
@@ -560,39 +570,30 @@ local function doAimbot(dt)
     local cx, cy = cam.ViewportSize.X/2, cam.ViewportSize.Y/2
     local dx, dy = sp.X-cx, sp.Y-cy
     local d      = math.sqrt(dx*dx + dy*dy)
-    if d < 4 then return end
+    if d < 3 then return end
 
-    local dNorm     = cl(d/350, 0, 1)
-    -- [FIX-F] Floor after multipliers
-    local smoothEff = S.AM.sm * (1 - dNorm*0.6)
-    if ramping   then smoothEff = smoothEff * 0.55 end
-    if switching then smoothEff = smoothEff * 0.4  end
-    smoothEff = math.max(0.01, smoothEff)
+    local dNorm = cl(d/350, 0, 1)
+    local sm    = S.AM.sm * (1 - dNorm*0.6)
+    if ramping   then sm = sm * 0.55 end
+    if switching then sm = sm * 0.4  end
+    sm = math.max(0.01, sm)
 
-    local f  = 1 - smoothEff
+    local f  = 1 - sm
     local mx = dx * f
     local my = dy * f
 
-    -- [FIX-D] Jitter scales with distance
     if ramping then
-        local jitterScale = cl(d / 120, 0.02, 0.6)
-        mx = mx + RNG:NextNumber(-0.5,0.5) * jitterScale
-        my = my + RNG:NextNumber(-0.5,0.5) * jitterScale
+        local js = cl(d/120, 0.02, 0.6)
+        mx = mx + RNG:NextNumber(-0.5,0.5) * js
+        my = my + RNG:NextNumber(-0.5,0.5) * js
     end
 
-    -- [FIX-J] mm scales with dt to prevent high-FPS overshoot
-    local mm = (14 + dNorm*34) * cl((dt or 0.016) * 60, 0.5, 2.0)
+    local mm = (10 + dNorm*30) * cl((dt or 0.016)*60, 0.5, 2.0)
     if math.abs(mx) > mm then mx = sg(dx)*mm end
     if math.abs(my) > mm then my = sg(dy)*mm end
 
-    -- [FIX-M] Corrected skip gate: random 2% chance per frame,
-    -- but enforces a minimum 0.8s gap between skips so they
-    -- are unpredictable but not annoyingly frequent.
     if now - ST.skipT > 0.8 then
-        if RNG:NextNumber() < 0.02 then
-            ST.skipT = now
-            return
-        end
+        if RNG:NextNumber() < 0.02 then ST.skipT = now; return end
     end
 
     if CAP.mr then
@@ -618,19 +619,18 @@ local function sa()
         if S.SL.sp and S.SL.sp > 0 then
             local so = S.SL.sp
             pos = pos + Vector3.new(
-                RNG:NextNumber(-so, so),
-                RNG:NextNumber(-so*0.6, so),
-                RNG:NextNumber(-so, so))
+                RNG:NextNumber(-so,so),
+                RNG:NextNumber(-so*0.6,so),
+                RNG:NextNumber(-so,so))
         end
         local sp, on = cam:WorldToViewportPoint(pos)
         if not on then return end
         local cx, cy = cam.ViewportSize.X/2, cam.ViewportSize.Y/2
         local dx, dy = sp.X-cx, sp.Y-cy
-        local d      = math.sqrt(dx*dx + dy*dy)
+        local d      = math.sqrt(dx*dx+dy*dy)
         if d < 25 then return end
         local f  = 1 - S.SL.sm
-        local mx = dx*f
-        local my = dy*f
+        local mx = dx*f; local my = dy*f
         local mm = 10 + S.SL.sm*8
         if math.abs(mx) > mm then mx = sg(dx)*mm end
         if math.abs(my) > mm then my = sg(dy)*mm end
@@ -667,11 +667,10 @@ local function tb()
         local sp, on = cam:WorldToViewportPoint(p.Position)
         if not on then return end
         local cx, cy = cam.ViewportSize.X/2, cam.ViewportSize.Y/2
-        if math.sqrt((sp.X-cx)^2+(sp.Y-cy)^2)
-            > 8 + (S.AC.hz and RNG:NextNumber(-2,5) or 0) then return end
+        if math.sqrt((sp.X-cx)^2+(sp.Y-cy)^2) > 8 + (S.AC.hz and RNG:NextNumber(-2,5) or 0) then return end
         local dl = S.TR.dl
-        if S.TR.rd  then dl = dl + RNG:NextNumber(-0.02, 0.035) end
-        if S.AC.hz  then dl = math.max(dl, S.TR.hr + RNG:NextNumber(0, 0.06)) end
+        if S.TR.rd then dl = dl + RNG:NextNumber(-0.02, 0.035) end
+        if S.AC.hz then dl = math.max(dl, S.TR.hr + RNG:NextNumber(0, 0.06)) end
         ST.cd = n + math.max(dl, 0.05)
         if dl <= 0.05 then sc()
         else
@@ -682,9 +681,23 @@ local function tb()
 end
 
 -- ============================================================
--- ESP
+-- ESP + HP COLOR GRADIENT
 -- ============================================================
 local IESP = {}
+
+local function hpColor(hum)
+    if not hum then return Color3.fromRGB(180,180,180) end
+    local max = hum.MaxHealth
+    if max <= 0 or max ~= max then return Color3.fromRGB(180,180,180) end
+    local pct = cl(hum.Health / max, 0, 1)
+    if pct > 0.6 then
+        local t = (pct - 0.6) / 0.4
+        return Color3.fromRGB(math.floor((1-t)*255), 180, 0)
+    else
+        local t = pct / 0.6
+        return Color3.fromRGB(200, math.floor(t*180), 0)
+    end
+end
 
 local function createInstanceESP(pl)
     local ok = pcall(function()
@@ -693,50 +706,34 @@ local function createInstanceESP(pl)
         local hlN = rn(8); local bgN = rn(9)
 
         local hl = Instance.new("Highlight")
-        hl.Name                = hlN
-        hl.FillTransparency    = 0.5
-        hl.OutlineTransparency = 0.2
-        hl.FillColor           = isEnemy(pl) and S.ES.ce or S.ES.ct
-        hl.OutlineColor        = Color3.fromRGB(255,255,255)
-        hl.Adornee             = c
-        hl.Parent              = c
+        hl.Name = hlN; hl.FillTransparency = 0.5; hl.OutlineTransparency = 0.2
+        hl.FillColor = isEnemy(pl) and S.ES.ce or S.ES.ct
+        hl.OutlineColor = Color3.fromRGB(255,255,255)
+        hl.Adornee = c; hl.Parent = c
 
         local bg = Instance.new("BillboardGui")
-        bg.Name        = bgN
-        bg.Size        = UDim2.new(0,200,0,50)
-        bg.StudsOffset = Vector3.new(0,3.5,0)
-        bg.AlwaysOnTop = true
+        bg.Name = bgN; bg.Size = UDim2.new(0,200,0,50)
+        bg.StudsOffset = Vector3.new(0,3.5,0); bg.AlwaysOnTop = true
         local head = c:FindFirstChild("Head") or fp(c)
         if head then bg.Adornee = head end
         bg.Parent = c
 
         local t1 = Instance.new("TextLabel")
-        t1.Size                   = UDim2.new(1,0,0,26)
-        t1.BackgroundTransparency = 1
-        t1.Text                   = pl.Name
-        t1.TextColor3             = Color3.fromRGB(255,255,255)
-        t1.TextStrokeTransparency = 0.2
-        t1.TextStrokeColor3       = Color3.fromRGB(0,0,0)
-        t1.Font                   = Enum.Font.GothamBold
-        t1.TextSize               = 16
-        t1.Parent                 = bg
+        t1.Size = UDim2.new(1,0,0,26); t1.BackgroundTransparency = 1
+        t1.Text = pl.Name; t1.TextColor3 = Color3.fromRGB(255,255,255)
+        t1.TextStrokeTransparency = 0.2; t1.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+        t1.Font = Enum.Font.GothamBold; t1.TextSize = 16; t1.Parent = bg
 
         local t2 = Instance.new("TextLabel")
-        t2.Size                   = UDim2.new(1,0,0,18)
-        t2.Position               = UDim2.new(0,0,0,28)
-        t2.BackgroundTransparency = 1
-        t2.Text                   = ""
-        t2.TextColor3             = Color3.fromRGB(180,220,180)
-        t2.TextStrokeTransparency = 0.4
-        t2.TextStrokeColor3       = Color3.fromRGB(0,0,0)
-        t2.Font                   = Enum.Font.Gotham
-        t2.TextSize               = 11
-        t2.Parent                 = bg
+        t2.Size = UDim2.new(1,0,0,18); t2.Position = UDim2.new(0,0,0,28)
+        t2.BackgroundTransparency = 1; t2.Text = ""
+        t2.TextColor3 = Color3.fromRGB(180,220,180)
+        t2.TextStrokeTransparency = 0.4; t2.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+        t2.Font = Enum.Font.Gotham; t2.TextSize = 11; t2.Parent = bg
 
         IESP[pl] = {
             highlight=hl, billboard=bg, txt2=t2,
-            hlN=hlN, bgN=bgN,
-            made=os.clock(), ren=os.clock(),
+            hlN=hlN, bgN=bgN, made=os.clock(), ren=os.clock(),
         }
     end)
     if not ok then IESP[pl] = {fail=os.clock()} end
@@ -770,124 +767,237 @@ end
 -- ============================================================
 local function setMenuVisible(v)
     if not GUI.main then return end
-    ST.hid           = not v
+    ST.hid = not v
     GUI.main.Visible = v
     if not v then
         if GUI.igPanel  then GUI.igPanel.Visible  = false end
         if GUI.setPanel then GUI.setPanel.Visible = false end
-        ST.mn       = false
-        ST.igOpen   = false
-        SI.dragging = false
-        ST._rb      = nil
+        ST.mn = false; ST.igOpen = false
+        SI.dragging = false; ST._rb = nil
         if GUI.restoreBar then GUI.restoreBar.Visible = true end
     else
+        ST.hid = false
         if GUI.restoreBar then GUI.restoreBar.Visible = false end
     end
 end
 
 local function toggleKeysPanel()
     if not GUI.setPanel then return end
-    ST.mn                = not ST.mn
-    GUI.setPanel.Visible = ST.mn
+    ST.mn = not ST.mn; GUI.setPanel.Visible = ST.mn
+end
+
+local function updBtn(name, state, onC, offC)
+    local pill = PILLS[name]
+    if not pill then return end
+    pill.BackgroundColor3 = state and onC or offC
+    pill.Text             = state and "ON" or "OFF"
 end
 
 -- ============================================================
--- IGNORE PANEL REFRESH
--- [FIX-IG] MouseButton1Click + capturedPl + AutoButtonColor
+-- IGNORE PANEL REFRESH  [FIX-IG1][FIX-IG2][FIX-IG3][FIX-IG4]
 -- ============================================================
 local function refreshIgnorePanel()
-    local container = GUI.igContainer; if not container then return end
+    local container = GUI.igContainer
+    if not container then return end
+
+    -- Search filter
     local q = ""
     if GUI.igSearch and GUI.igSearch.Text then
         q = GUI.igSearch.Text:lower()
     end
     if q ~= ST.igQuery then ST.igQuery = q; ST.igScroll = 0 end
 
-    local children = container:GetChildren()
-    for i = #children, 1, -1 do
-        local child = children[i]
-        if child:IsA("TextButton") or child:IsA("TextLabel") then child:Destroy() end
+    -- Clear existing rows
+    for _, child in ipairs(container:GetChildren()) do
+        if child:IsA("TextButton") or child:IsA("TextLabel") then
+            child:Destroy()
+        end
     end
 
+    -- Build candidate list with live distances
     local list = {}
+    local ignoredCount = 0
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= ME then
             if q == "" or pl.Name:lower():find(q, 1, true) then
-                list[#list+1] = pl
+                local dist = distToPlayer(pl)  -- [FIX-IG1]
+                list[#list+1] = {pl=pl, dist=dist}
             end
+            if isIgnored(pl) then ignoredCount = ignoredCount + 1 end
         end
     end
-    table.sort(list, function(a,b) return a.Name < b.Name end)
+
+    -- [FIX-IG2] Sort: proximity (nearest first) OR alphabetical
+    if ST.igSortNear then
+        -- Near-first: unknown distance (math.huge) falls to bottom
+        -- Among same-distance players (both have no char), sort by name
+        table.sort(list, function(a, b)
+            if a.dist == b.dist then return a.pl.Name < b.pl.Name end
+            return a.dist < b.dist
+        end)
+    else
+        table.sort(list, function(a, b) return a.pl.Name < b.pl.Name end)
+    end
+
+    -- Update header status label: "12 players  |  3 ignored"
+    if GUI.igStatusLbl then
+        local total = #list
+        GUI.igStatusLbl.Text = total .. " players  |  " .. ignoredCount .. " ignored"
+    end
+
+    -- Update sort button label to reflect current mode
+    if GUI.igSortBtn then
+        GUI.igSortBtn.Text = ST.igSortNear and "NEAR  ▲" or "A - Z  ▲"
+    end
 
     if #list == 0 then
         local empty = Instance.new("TextLabel")
-        empty.Size                   = UDim2.new(1,0,0,40)
-        empty.Position               = UDim2.new(0,0,0,10)
+        empty.Size = UDim2.new(1,0,0,40)
+        empty.Position = UDim2.new(0,0,0,10)
         empty.BackgroundTransparency = 1
-        empty.Text      = q ~= "" and "No players match" or "No players in server"
+        empty.Text = q ~= "" and "No players match" or "No players in server"
         empty.TextColor3 = Color3.fromRGB(180,180,180)
-        empty.TextSize  = 14; empty.Font = Enum.Font.Gotham
-        empty.Parent    = container
+        empty.TextSize = 13; empty.Font = Enum.Font.Gotham
+        empty.Parent = container
         return
     end
 
-    local ROW     = 30
-    local VISIBLE = math.max(1, math.floor((container.Size.Y.Offset-8)/ROW))
-    local MAX     = math.max(0, #list-VISIBLE)
+    local ROW     = 32   -- [IMPROVE] taller rows
+    local contH   = math.max(60,
+        container.AbsoluteSize.Y > 0
+        and container.AbsoluteSize.Y
+        or container.Size.Y.Offset)
+    local VISIBLE = math.max(1, math.floor((contH - 8) / ROW))
+    local MAX     = math.max(0, #list - VISIBLE)
     ST.igScroll   = cl(ST.igScroll or 0, 0, MAX)
 
     local y = 4
-    for i = 1+ST.igScroll, math.min(#list, ST.igScroll+VISIBLE) do
-        local pl         = list[i]
-        local ignored    = isIgnored(pl)
-        local capturedPl = pl
+    for i = 1 + ST.igScroll, math.min(#list, ST.igScroll + VISIBLE) do
+        local entry   = list[i]
+        local pl      = entry.pl
+        local dist    = entry.dist
+        local ignored = isIgnored(pl)
+        local cap     = pl  -- closure capture
 
-        local b = Instance.new("TextButton")
-        b.Size             = UDim2.new(1,0,0,26)
-        b.Position         = UDim2.new(0,0,0,y)
-        b.BackgroundColor3 = ignored
-            and Color3.fromRGB(120,30,30)
-            or  Color3.fromRGB(40,40,60)
-        b.BorderSizePixel  = 0
-        b.Text             = (ignored and "[X] " or "      ") .. pl.Name
-        b.TextColor3       = ignored
-            and Color3.fromRGB(255,120,120)
-            or  Color3.fromRGB(200,200,255)
-        b.TextSize         = 12
-        b.Font             = Enum.Font.GothamBold
-        b.AutoButtonColor  = true
-        b.Parent           = container
+        -- Row background
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1,0,0,ROW-2)
+        row.Position = UDim2.new(0,0,0,y)
+        row.BackgroundColor3 = ignored
+            and Color3.fromRGB(110,25,25)
+            or  Color3.fromRGB(32,32,52)
+        row.BackgroundTransparency = 0.08
+        row.BorderSizePixel = 0
+        row.Parent = container
+        pcall(function()
+            Instance.new("UICorner", row).CornerRadius = UDim.new(0,5)
+        end)
 
-        b.MouseButton1Click:Connect(function()
-            if IGNORE[capturedPl] then
-                IGNORE[capturedPl] = nil
-            else
-                IGNORE[capturedPl] = true
-            end
+        -- Toggle button (click anywhere on the row)
+        local clickBtn = Instance.new("TextButton")
+        clickBtn.Size = UDim2.new(1,0,1,0)
+        clickBtn.BackgroundTransparency = 1
+        clickBtn.Text = ""
+        clickBtn.ZIndex = 3
+        clickBtn.Parent = row
+
+        -- Status icon  [X] or [ ]
+        local iconLbl = Instance.new("TextLabel")
+        iconLbl.Size = UDim2.new(0,22,1,0)
+        iconLbl.Position = UDim2.new(0,4,0,0)
+        iconLbl.BackgroundTransparency = 1
+        iconLbl.Text = ignored and "[X]" or "[ ]"
+        iconLbl.TextColor3 = ignored
+            and Color3.fromRGB(255,90,90)
+            or  Color3.fromRGB(120,120,160)
+        iconLbl.TextSize = 11
+        iconLbl.Font = Enum.Font.GothamBold
+        iconLbl.ZIndex = 2
+        iconLbl.Parent = row
+
+        -- Player name
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Size = UDim2.new(1,-90,1,0)
+        nameLbl.Position = UDim2.new(0,28,0,0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = pl.Name
+        nameLbl.TextColor3 = ignored
+            and Color3.fromRGB(255,110,110)
+            or  Color3.fromRGB(210,210,230)
+        nameLbl.TextSize = 12
+        nameLbl.Font = Enum.Font.GothamBold
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLbl.ZIndex = 2
+        nameLbl.Parent = row
+
+        -- [FIX-IG3] Distance badge on the right
+        local distLbl = Instance.new("TextLabel")
+        distLbl.Size = UDim2.new(0,56,1,0)
+        distLbl.Position = UDim2.new(1,-58,0,0)
+        distLbl.BackgroundTransparency = 1
+        local distStr
+        if dist == math.huge then
+            distStr = "? m"
+        elseif dist >= 1000 then
+            distStr = math.floor(dist/100)/10 .. "km"
+        else
+            distStr = math.floor(dist+0.5) .. " m"
+        end
+        distLbl.Text = distStr
+        -- Color: green<50m, yellow<150m, red further, gray=unknown
+        if dist == math.huge then
+            distLbl.TextColor3 = Color3.fromRGB(100,100,120)
+        elseif dist < 50 then
+            distLbl.TextColor3 = Color3.fromRGB(80,220,80)
+        elseif dist < 150 then
+            distLbl.TextColor3 = Color3.fromRGB(220,180,60)
+        else
+            distLbl.TextColor3 = Color3.fromRGB(180,100,100)
+        end
+        distLbl.TextSize = 11
+        distLbl.Font = Enum.Font.Gotham
+        distLbl.TextXAlignment = Enum.TextXAlignment.Right
+        distLbl.ZIndex = 2
+        distLbl.Parent = row
+
+        -- Hover highlight
+        clickBtn.MouseEnter:Connect(function()
+            row.BackgroundColor3 = isIgnored(cap)
+                and Color3.fromRGB(160,45,45)
+                or  Color3.fromRGB(55,55,80)
+        end)
+        clickBtn.MouseLeave:Connect(function()
+            row.BackgroundColor3 = isIgnored(cap)
+                and Color3.fromRGB(110,25,25)
+                or  Color3.fromRGB(32,32,52)
+        end)
+
+        -- Toggle ignore on click
+        clickBtn.MouseButton1Down:Connect(function()
+            if IGNORE[cap] then IGNORE[cap] = nil else IGNORE[cap] = true end
             pcall(refreshIgnorePanel)
-        end)
-
-        b.MouseEnter:Connect(function()
-            b.BackgroundColor3 = isIgnored(capturedPl)
-                and Color3.fromRGB(160,50,50)
-                or  Color3.fromRGB(65,65,90)
-        end)
-        b.MouseLeave:Connect(function()
-            b.BackgroundColor3 = isIgnored(capturedPl)
-                and Color3.fromRGB(120,30,30)
-                or  Color3.fromRGB(40,40,60)
         end)
 
         y = y + ROW
     end
 
-    if GUI.igUp   then
-        GUI.igUp.BackgroundColor3   = ST.igScroll > 0
-            and Color3.fromRGB(60,40,90) or Color3.fromRGB(30,25,40)
+    -- Scroll arrow visibility
+    if GUI.igUp then
+        GUI.igUp.BackgroundColor3 = ST.igScroll > 0
+            and Color3.fromRGB(60,40,90)
+            or  Color3.fromRGB(25,22,35)
+        GUI.igUp.TextColor3 = ST.igScroll > 0
+            and Color3.fromRGB(220,180,255)
+            or  Color3.fromRGB(70,60,90)
     end
     if GUI.igDown then
         GUI.igDown.BackgroundColor3 = ST.igScroll < MAX
-            and Color3.fromRGB(60,40,90) or Color3.fromRGB(30,25,40)
+            and Color3.fromRGB(60,40,90)
+            or  Color3.fromRGB(25,22,35)
+        GUI.igDown.TextColor3 = ST.igScroll < MAX
+            and Color3.fromRGB(220,180,255)
+            or  Color3.fromRGB(70,60,90)
     end
 end
 
@@ -898,26 +1008,23 @@ local function cg()
     local gn = rs(16); local mn2 = rs(12); local sn = rs(12); local bn = rs(12)
 
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name           = gn
-    screenGui.ResetOnSpawn   = false
+    screenGui.Name = gn; screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     local ok = pcall(function() screenGui.Parent = ME:WaitForChild("PlayerGui") end)
     if not ok then ok = pcall(function() screenGui.Parent = CG end) end
-    if not ok then print("[V9.22-OPSYX] No GUI parent"); return end
+    if not ok then print("[V9.27-OPSYX] No GUI parent"); return end
     GUI.sg = screenGui
     if not ST.ourGuis then ST.ourGuis = {} end
     table.insert(ST.ourGuis, screenGui)
 
+    -- ===== MAIN FRAME =====
     local main = Instance.new("Frame")
-    main.Name                = mn2
-    main.Size                = UDim2.new(0, 220, 0, 310)
-    main.Position            = UDim2.new(1,-490,0,70)
-    main.BackgroundColor3    = Color3.fromRGB(10,10,18)
+    main.Name = mn2; main.Size = UDim2.new(0,220,0,320)
+    main.Position = UDim2.new(1,-490,0,70)
+    main.BackgroundColor3 = Color3.fromRGB(10,10,18)
     main.BackgroundTransparency = 0.08
-    main.BorderSizePixel     = 0
-    main.Active              = true
-    main.Draggable           = true
-    main.Parent              = screenGui
+    main.BorderSizePixel = 0; main.Active = true; main.Draggable = true
+    main.Parent = screenGui
     pcall(function()
         Instance.new("UICorner", main).CornerRadius = UDim.new(0,10)
         local st = Instance.new("UIStroke", main)
@@ -926,32 +1033,28 @@ local function cg()
     GUI.main = main
 
     local accent = Instance.new("Frame")
-    accent.Size             = UDim2.new(1,0,0,2)
-    accent.Position         = UDim2.new(0,0,0,26)
+    accent.Size = UDim2.new(1,0,0,2); accent.Position = UDim2.new(0,0,0,26)
     accent.BackgroundColor3 = Color3.fromRGB(0,180,255)
-    accent.BorderSizePixel  = 0; accent.Parent = main
+    accent.BorderSizePixel = 0; accent.Parent = main
 
-    local title = Instance.new("TextLabel")
-    title.Size               = UDim2.new(1,-56,0,26)
-    title.Position           = UDim2.new(0,10,0,0)
-    title.BackgroundTransparency = 1
-    title.Text               = "OPSYX  v9.22"
-    title.TextColor3         = Color3.fromRGB(0,200,255)
-    title.TextSize           = 13; title.Font = Enum.Font.GothamBold
-    title.TextXAlignment     = Enum.TextXAlignment.Left
-    title.Parent             = main
+    local titleLbl = Instance.new("TextLabel")
+    titleLbl.Size = UDim2.new(1,-56,0,26); titleLbl.Position = UDim2.new(0,10,0,0)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text = "OPSYX v9.27  |  -- FPS"
+    titleLbl.TextColor3 = Color3.fromRGB(0,200,255)
+    titleLbl.TextSize = 13; titleLbl.Font = Enum.Font.GothamBold
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    titleLbl.Parent = main
+    GUI.titleLabel = titleLbl
 
     local WBTN = 20; local WCY = 3
     local function makeWBtn(xOff, col, lbl)
         local b = Instance.new("TextButton")
-        b.Size             = UDim2.new(0,WBTN,0,WBTN)
-        b.Position         = UDim2.new(1,xOff,0,WCY)
-        b.BackgroundColor3 = col
-        b.BackgroundTransparency = 0.15
-        b.BorderSizePixel  = 0; b.Text = lbl
-        b.TextColor3       = Color3.fromRGB(255,255,255)
-        b.TextSize         = 12; b.Font = Enum.Font.GothamBold
-        b.Parent           = main
+        b.Size = UDim2.new(0,WBTN,0,WBTN); b.Position = UDim2.new(1,xOff,0,WCY)
+        b.BackgroundColor3 = col; b.BackgroundTransparency = 0.15
+        b.BorderSizePixel = 0; b.Text = lbl
+        b.TextColor3 = Color3.fromRGB(255,255,255)
+        b.TextSize = 12; b.Font = Enum.Font.GothamBold; b.Parent = main
         pcall(function() Instance.new("UICorner",b).CornerRadius = UDim.new(0,5) end)
         return b
     end
@@ -964,15 +1067,12 @@ local function cg()
     closeBtn.MouseLeave:Connect(function() closeBtn.BackgroundColor3 = Color3.fromRGB(120,30,30)  end)
 
     local restoreBar = Instance.new("TextButton")
-    restoreBar.Size             = UDim2.new(0,100,0,22)
-    restoreBar.Position         = UDim2.new(0,10,0,40)
+    restoreBar.Size = UDim2.new(0,100,0,22); restoreBar.Position = UDim2.new(0,10,0,40)
     restoreBar.BackgroundColor3 = Color3.fromRGB(10,10,18)
-    restoreBar.BackgroundTransparency = 0.08
-    restoreBar.BorderSizePixel  = 0
-    restoreBar.Text             = "OPSYX"
-    restoreBar.TextColor3       = Color3.fromRGB(0,200,255)
-    restoreBar.TextSize         = 11; restoreBar.Font = Enum.Font.GothamBold
-    restoreBar.Visible          = false; restoreBar.Parent = screenGui
+    restoreBar.BackgroundTransparency = 0.08; restoreBar.BorderSizePixel = 0
+    restoreBar.Text = "OPSYX"; restoreBar.TextColor3 = Color3.fromRGB(0,200,255)
+    restoreBar.TextSize = 11; restoreBar.Font = Enum.Font.GothamBold
+    restoreBar.Visible = false; restoreBar.Parent = screenGui
     pcall(function()
         Instance.new("UICorner",restoreBar).CornerRadius = UDim.new(0,6)
         local st = Instance.new("UIStroke",restoreBar)
@@ -980,44 +1080,34 @@ local function cg()
     end)
     GUI.restoreBar = restoreBar
 
-    minBtn.MouseButton1Down:Connect(function()    setMenuVisible(false) end)
-    closeBtn.MouseButton1Down:Connect(function()  setMenuVisible(false) end)
-    restoreBar.MouseButton1Down:Connect(function() setMenuVisible(true) end)
+    minBtn.MouseButton1Down:Connect(function()     setMenuVisible(false) end)
+    closeBtn.MouseButton1Down:Connect(function()   setMenuVisible(false) end)
+    restoreBar.MouseButton1Down:Connect(function() setMenuVisible(true)  end)
 
-    local RED = Color3.fromRGB(200,40,40)
-    local GRN = Color3.fromRGB(30,180,60)
-    local ORG = Color3.fromRGB(210,110,0)
-    local BLU = Color3.fromRGB(30,100,220)
-
+    -- ===== TOGGLE BUILDER =====
     local function makeToggle(lbl, yPos, offCol, onCol, getter, setter)
         local row = Instance.new("Frame")
-        row.Size             = UDim2.new(0.92,0,0,26)
-        row.Position         = UDim2.new(0.04,0,0,yPos)
+        row.Size = UDim2.new(0.92,0,0,26); row.Position = UDim2.new(0.04,0,0,yPos)
         row.BackgroundColor3 = Color3.fromRGB(18,18,30)
-        row.BackgroundTransparency = 0.3
-        row.BorderSizePixel  = 0; row.Parent = main
+        row.BackgroundTransparency = 0.3; row.BorderSizePixel = 0; row.Parent = main
         pcall(function() Instance.new("UICorner",row).CornerRadius = UDim.new(0,6) end)
 
         local lbEl = Instance.new("TextLabel")
-        lbEl.Size               = UDim2.new(0.6,0,1,0)
-        lbEl.BackgroundTransparency = 1
-        lbEl.Text               = lbl
-        lbEl.TextColor3         = Color3.fromRGB(210,210,220)
-        lbEl.TextSize           = 12; lbEl.Font = Enum.Font.GothamBold
-        lbEl.TextXAlignment     = Enum.TextXAlignment.Left
-        lbEl.Position           = UDim2.new(0,8,0,0)
-        lbEl.Parent             = row
+        lbEl.Size = UDim2.new(0.6,0,1,0); lbEl.BackgroundTransparency = 1
+        lbEl.Text = lbl; lbEl.TextColor3 = Color3.fromRGB(210,210,220)
+        lbEl.TextSize = 12; lbEl.Font = Enum.Font.GothamBold
+        lbEl.TextXAlignment = Enum.TextXAlignment.Left
+        lbEl.Position = UDim2.new(0,8,0,0); lbEl.Parent = row
 
         local pill = Instance.new("TextButton")
-        pill.Size             = UDim2.new(0,46,0,18)
-        pill.Position         = UDim2.new(1,-52,0.5,-9)
+        pill.Size = UDim2.new(0,46,0,18); pill.Position = UDim2.new(1,-52,0.5,-9)
         pill.BackgroundColor3 = getter() and onCol or offCol
-        pill.BorderSizePixel  = 0
-        pill.Text             = getter() and "ON" or "OFF"
-        pill.TextColor3       = Color3.fromRGB(255,255,255)
-        pill.TextSize         = 10; pill.Font = Enum.Font.GothamBold
-        pill.Parent           = row
+        pill.BorderSizePixel = 0; pill.Text = getter() and "ON" or "OFF"
+        pill.TextColor3 = Color3.fromRGB(255,255,255)
+        pill.TextSize = 10; pill.Font = Enum.Font.GothamBold; pill.Parent = row
         pcall(function() Instance.new("UICorner",pill).CornerRadius = UDim.new(1,0) end)
+
+        PILLS[lbl] = pill
 
         local function refresh()
             local ns = getter()
@@ -1026,86 +1116,78 @@ local function cg()
         end
 
         pill.MouseButton1Down:Connect(function() setter(); refresh() end)
-        row.InputBegan:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                setter(); refresh()
-            end
-        end)
         return pill
     end
 
     local Y = 32; local GAP = 30
 
-    makeToggle("AIMBOT",   Y, RED, GRN,
+    makeToggle("AIMBOT",    Y, C_RED, C_GRN,
         function() return S.AM.on end,
-        function() S.AM.on=not S.AM.on; if not S.AM.on then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999 end end)
+        function() S.AM.on=not S.AM.on; if not S.AM.on then flushTarget() end end)
     Y = Y + GAP
 
-    makeToggle("ESP",      Y, RED, GRN,
+    makeToggle("ESP",       Y, C_RED, C_GRN,
         function() return S.ES.on end,
         function() S.ES.on=not S.ES.on; if not S.ES.on then destroyAllInstanceESP() end end)
     Y = Y + GAP
 
-    makeToggle("SILENT",   Y, ORG, GRN,
+    makeToggle("SILENT",    Y, C_ORG, C_GRN,
         function() return S.SL.on end,
         function() S.SL.on=not S.SL.on end)
     Y = Y + GAP
 
-    makeToggle("TRIGGER",  Y, RED, GRN,
+    makeToggle("TRIGGER",   Y, C_RED, C_GRN,
         function() return S.TR.on end,
         function() S.TR.on=not S.TR.on end)
     Y = Y + GAP
 
-    makeToggle("FOV CIRCLE", Y, BLU, GRN,
+    makeToggle("FOV CIRCLE",Y, C_BLU, C_GRN,
         function() return S.FV.on end,
         function() S.FV.on=not S.FV.on end)
     Y = Y + GAP
 
-    makeToggle("WALL CHECK", Y, ORG, GRN,
+    makeToggle("WALL CHECK",Y, C_ORG, C_GRN,
         function() return S.AM.wc end,
         function() local nv=not S.AM.wc; S.AM.wc=nv; S.SL.wc=nv; S.TR.wc=nv end)
     Y = Y + GAP
 
-    makeToggle("HOLD AIM", Y, ORG, GRN,
+    makeToggle("HOLD AIM",  Y, C_ORG, C_GRN,
         function() return holdToAimEnabled end,
         function()
             holdToAimEnabled = not holdToAimEnabled
-            if not holdToAimEnabled and S.AM.on and ST.arm then S.AM.on=false end
+            if not holdToAimEnabled then
+                S.AM.on=false; ST.arm=false; ST.saArm=false; flushTarget()
+            end
         end)
     Y = Y + GAP
 
     local igBtn = Instance.new("TextButton")
-    igBtn.Size             = UDim2.new(0.92,0,0,26)
-    igBtn.Position         = UDim2.new(0.04,0,0,Y)
-    igBtn.BackgroundColor3 = Color3.fromRGB(55,20,65)
-    igBtn.BackgroundTransparency = 0.2
-    igBtn.BorderSizePixel  = 0; igBtn.Text = "IGNORE LIST"
-    igBtn.TextColor3       = Color3.fromRGB(200,140,255)
-    igBtn.TextSize         = 12; igBtn.Font = Enum.Font.GothamBold
-    igBtn.Parent           = main
+    igBtn.Size = UDim2.new(0.92,0,0,26); igBtn.Position = UDim2.new(0.04,0,0,Y)
+    igBtn.BackgroundColor3 = Color3.fromRGB(55,20,65); igBtn.BackgroundTransparency = 0.2
+    igBtn.BorderSizePixel = 0; igBtn.Text = "IGNORE LIST"
+    igBtn.TextColor3 = Color3.fromRGB(200,140,255)
+    igBtn.TextSize = 12; igBtn.Font = Enum.Font.GothamBold; igBtn.Parent = main
     pcall(function() Instance.new("UICorner",igBtn).CornerRadius = UDim.new(0,6) end)
     Y = Y + GAP
 
     local setBtn = Instance.new("TextButton")
-    setBtn.Size             = UDim2.new(0.92,0,0,26)
-    setBtn.Position         = UDim2.new(0.04,0,0,Y)
-    setBtn.BackgroundColor3 = Color3.fromRGB(25,25,70)
-    setBtn.BackgroundTransparency = 0.2
-    setBtn.BorderSizePixel  = 0; setBtn.Text = "KEYS  [F5]"
-    setBtn.TextColor3       = Color3.fromRGB(150,180,255)
-    setBtn.TextSize         = 12; setBtn.Font = Enum.Font.GothamBold
-    setBtn.Parent           = main
+    setBtn.Size = UDim2.new(0.92,0,0,26); setBtn.Position = UDim2.new(0.04,0,0,Y)
+    setBtn.BackgroundColor3 = Color3.fromRGB(25,25,70); setBtn.BackgroundTransparency = 0.2
+    setBtn.BorderSizePixel = 0; setBtn.Text = "KEYS  [F5]"
+    setBtn.TextColor3 = Color3.fromRGB(150,180,255)
+    setBtn.TextSize = 12; setBtn.Font = Enum.Font.GothamBold; setBtn.Parent = main
     pcall(function() Instance.new("UICorner",setBtn).CornerRadius = UDim.new(0,6) end)
 
-    -- IGNORE PANEL
+    -- ================================================================
+    -- IGNORE PANEL  [FIX-IG1][FIX-IG2][FIX-IG3][FIX-IG4]
+    -- ================================================================
     local igPanel = Instance.new("Frame")
-    igPanel.Name             = bn
-    igPanel.Size             = UDim2.new(0,230,0,500)
-    igPanel.Position         = UDim2.new(1,-267,0,70)
+    igPanel.Name = bn; igPanel.Size = UDim2.new(0,246,0,520)
+    igPanel.Position = UDim2.new(1,-284,0,70)
     igPanel.BackgroundColor3 = Color3.fromRGB(10,10,18)
-    igPanel.BackgroundTransparency = 0.08
-    igPanel.BorderSizePixel  = 0; igPanel.Active = true; igPanel.Draggable = true
-    igPanel.Visible          = false; igPanel.Parent = screenGui
+    igPanel.BackgroundTransparency = 0.08; igPanel.BorderSizePixel = 0
+    igPanel.Active = true; igPanel.Draggable = true
+    igPanel.Visible = false; igPanel.Parent = screenGui
     pcall(function()
         Instance.new("UICorner",igPanel).CornerRadius = UDim.new(0,10)
         local st = Instance.new("UIStroke",igPanel)
@@ -1113,94 +1195,138 @@ local function cg()
     end)
     GUI.igPanel = igPanel
 
+    -- Panel title
     local igTitle = Instance.new("TextLabel")
-    igTitle.Size               = UDim2.new(1,0,0,28)
+    igTitle.Size = UDim2.new(1,0,0,24); igTitle.Position = UDim2.new(0,0,0,4)
     igTitle.BackgroundTransparency = 1
-    igTitle.Text               = "IGNORE LIST"
-    igTitle.TextColor3         = Color3.fromRGB(200,150,255)
-    igTitle.TextSize           = 13; igTitle.Font = Enum.Font.GothamBold
-    igTitle.Parent             = igPanel
+    igTitle.Text = "IGNORE LIST"
+    igTitle.TextColor3 = Color3.fromRGB(200,150,255)
+    igTitle.TextSize = 13; igTitle.Font = Enum.Font.GothamBold
+    igTitle.Parent = igPanel
 
+    -- [IMPROVE] Status line: player count + ignored count
+    local igStatusLbl = Instance.new("TextLabel")
+    igStatusLbl.Size = UDim2.new(1,-12,0,16); igStatusLbl.Position = UDim2.new(0,6,0,26)
+    igStatusLbl.BackgroundTransparency = 1
+    igStatusLbl.Text = "-- players  |  -- ignored"
+    igStatusLbl.TextColor3 = Color3.fromRGB(130,130,160)
+    igStatusLbl.TextSize = 10; igStatusLbl.Font = Enum.Font.Gotham
+    igStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+    igStatusLbl.Parent = igPanel
+    GUI.igStatusLbl = igStatusLbl
+
+    -- Search box
     local igSearch = Instance.new("TextBox")
-    igSearch.Size              = UDim2.new(1,-10,0,26)
-    igSearch.Position          = UDim2.new(0,5,0,30)
-    igSearch.BackgroundColor3  = Color3.fromRGB(20,20,34)
-    igSearch.BackgroundTransparency = 0.25
-    igSearch.BorderSizePixel   = 0
-    igSearch.PlaceholderText   = "Search..."
-    igSearch.Text              = ""
-    igSearch.TextColor3        = Color3.fromRGB(220,220,255)
-    igSearch.PlaceholderColor3 = Color3.fromRGB(110,110,140)
-    igSearch.TextSize          = 12; igSearch.Font = Enum.Font.Gotham
-    igSearch.ClearTextOnFocus  = false; igSearch.Parent = igPanel
+    igSearch.Size = UDim2.new(1,-10,0,24); igSearch.Position = UDim2.new(0,5,0,44)
+    igSearch.BackgroundColor3 = Color3.fromRGB(20,20,34); igSearch.BackgroundTransparency = 0.2
+    igSearch.BorderSizePixel = 0; igSearch.PlaceholderText = "Search player..."
+    igSearch.Text = ""; igSearch.TextColor3 = Color3.fromRGB(220,220,255)
+    igSearch.PlaceholderColor3 = Color3.fromRGB(100,100,135)
+    igSearch.TextSize = 12; igSearch.Font = Enum.Font.Gotham
+    igSearch.ClearTextOnFocus = false; igSearch.Parent = igPanel
     pcall(function() Instance.new("UICorner",igSearch).CornerRadius = UDim.new(0,5) end)
     GUI.igSearch = igSearch
     igSearch:GetPropertyChangedSignal("Text"):Connect(function() pcall(refreshIgnorePanel) end)
 
+    -- [FIX-IG2] Sort toggle button
+    local igSortBtn = Instance.new("TextButton")
+    igSortBtn.Size = UDim2.new(1,-10,0,22); igSortBtn.Position = UDim2.new(0,5,0,70)
+    igSortBtn.BackgroundColor3 = Color3.fromRGB(40,25,60); igSortBtn.BackgroundTransparency = 0.2
+    igSortBtn.BorderSizePixel = 0
+    igSortBtn.Text = ST.igSortNear and "NEAR  ▲" or "A - Z  ▲"
+    igSortBtn.TextColor3 = Color3.fromRGB(190,140,255)
+    igSortBtn.TextSize = 11; igSortBtn.Font = Enum.Font.GothamBold
+    igSortBtn.Parent = igPanel
+    pcall(function() Instance.new("UICorner",igSortBtn).CornerRadius = UDim.new(0,5) end)
+    GUI.igSortBtn = igSortBtn
+
+    igSortBtn.MouseButton1Down:Connect(function()
+        ST.igSortNear = not ST.igSortNear
+        pcall(refreshIgnorePanel)
+    end)
+    igSortBtn.MouseEnter:Connect(function()
+        igSortBtn.BackgroundColor3 = Color3.fromRGB(65,40,95)
+    end)
+    igSortBtn.MouseLeave:Connect(function()
+        igSortBtn.BackgroundColor3 = Color3.fromRGB(40,25,60)
+    end)
+
+    -- Container for player rows
     local igContainer = Instance.new("Frame")
-    igContainer.Size               = UDim2.new(1,-10,0,370)
-    igContainer.Position           = UDim2.new(0,5,0,62)
-    igContainer.BackgroundTransparency = 1
-    igContainer.BorderSizePixel    = 0; igContainer.Parent = igPanel
+    igContainer.Size = UDim2.new(1,-10,0,356)
+    igContainer.Position = UDim2.new(0,5,0,95)
+    igContainer.BackgroundTransparency = 1; igContainer.BorderSizePixel = 0
+    igContainer.ClipsDescendants = true
+    igContainer.Parent = igPanel
     GUI.igContainer = igContainer
 
+    -- Scroll buttons
     local igUp = Instance.new("TextButton")
-    igUp.Size             = UDim2.new(0,64,0,24)
-    igUp.Position         = UDim2.new(0,10,1,-58)
-    igUp.BackgroundColor3 = Color3.fromRGB(60,40,90)
-    igUp.BackgroundTransparency = 0.3
-    igUp.BorderSizePixel  = 0; igUp.Text = "^"
-    igUp.TextColor3       = Color3.fromRGB(220,180,255)
-    igUp.TextSize         = 13; igUp.Font = Enum.Font.GothamBold
-    igUp.Parent           = igPanel
+    igUp.Size = UDim2.new(0,70,0,26); igUp.Position = UDim2.new(0,8,1,-60)
+    igUp.BackgroundColor3 = Color3.fromRGB(25,22,35); igUp.BackgroundTransparency = 0.2
+    igUp.BorderSizePixel = 0; igUp.Text = "▲  UP"
+    igUp.TextColor3 = Color3.fromRGB(70,60,90); igUp.TextSize = 11
+    igUp.Font = Enum.Font.GothamBold; igUp.Parent = igPanel
     pcall(function() Instance.new("UICorner",igUp).CornerRadius = UDim.new(0,5) end)
     igUp.MouseButton1Down:Connect(function()
-        ST.igScroll = math.max(0,(ST.igScroll or 0)-6); refreshIgnorePanel()
+        ST.igScroll = math.max(0,(ST.igScroll or 0)-5)
+        pcall(refreshIgnorePanel)
     end)
     GUI.igUp = igUp
 
     local igDown = Instance.new("TextButton")
-    igDown.Size             = UDim2.new(0,64,0,24)
-    igDown.Position         = UDim2.new(0,82,1,-58)
-    igDown.BackgroundColor3 = Color3.fromRGB(60,40,90)
-    igDown.BackgroundTransparency = 0.3
-    igDown.BorderSizePixel  = 0; igDown.Text = "v"
-    igDown.TextColor3       = Color3.fromRGB(220,180,255)
-    igDown.TextSize         = 13; igDown.Font = Enum.Font.GothamBold
-    igDown.Parent           = igPanel
+    igDown.Size = UDim2.new(0,70,0,26); igDown.Position = UDim2.new(0,84,1,-60)
+    igDown.BackgroundColor3 = Color3.fromRGB(25,22,35); igDown.BackgroundTransparency = 0.2
+    igDown.BorderSizePixel = 0; igDown.Text = "▼  DOWN"
+    igDown.TextColor3 = Color3.fromRGB(70,60,90); igDown.TextSize = 11
+    igDown.Font = Enum.Font.GothamBold; igDown.Parent = igPanel
     pcall(function() Instance.new("UICorner",igDown).CornerRadius = UDim.new(0,5) end)
     igDown.MouseButton1Down:Connect(function()
-        ST.igScroll = ST.igScroll + 6; refreshIgnorePanel()
+        ST.igScroll = (ST.igScroll or 0) + 5
+        pcall(refreshIgnorePanel)
     end)
     GUI.igDown = igDown
 
+    -- Clear ignored button
+    local igClearBtn = Instance.new("TextButton")
+    igClearBtn.Size = UDim2.new(0,60,0,26); igClearBtn.Position = UDim2.new(1,-70,1,-60)
+    igClearBtn.BackgroundColor3 = Color3.fromRGB(70,20,20); igClearBtn.BackgroundTransparency = 0.2
+    igClearBtn.BorderSizePixel = 0; igClearBtn.Text = "CLEAR"
+    igClearBtn.TextColor3 = Color3.fromRGB(255,130,130); igClearBtn.TextSize = 10
+    igClearBtn.Font = Enum.Font.GothamBold; igClearBtn.Parent = igPanel
+    pcall(function() Instance.new("UICorner",igClearBtn).CornerRadius = UDim.new(0,5) end)
+    igClearBtn.MouseButton1Down:Connect(function()
+        for pl in pairs(IGNORE) do IGNORE[pl] = nil end
+        pcall(refreshIgnorePanel)
+    end)
+
     local igClose = Instance.new("TextButton")
-    igClose.Size             = UDim2.new(0,80,0,24)
-    igClose.Position         = UDim2.new(0.5,-40,1,-28)
-    igClose.BackgroundColor3 = Color3.fromRGB(60,20,20)
-    igClose.BackgroundTransparency = 0.2
-    igClose.BorderSizePixel  = 0; igClose.Text = "CLOSE"
-    igClose.TextColor3       = Color3.fromRGB(255,140,140)
-    igClose.TextSize         = 11; igClose.Font = Enum.Font.GothamBold
-    igClose.Parent           = igPanel
+    igClose.Size = UDim2.new(0,60,0,26); igClose.Position = UDim2.new(0.5,-30,1,-28)
+    igClose.BackgroundColor3 = Color3.fromRGB(50,18,18); igClose.BackgroundTransparency = 0.2
+    igClose.BorderSizePixel = 0; igClose.Text = "CLOSE"
+    igClose.TextColor3 = Color3.fromRGB(255,140,140); igClose.TextSize = 11
+    igClose.Font = Enum.Font.GothamBold; igClose.Parent = igPanel
     pcall(function() Instance.new("UICorner",igClose).CornerRadius = UDim.new(0,5) end)
-    igClose.MouseButton1Down:Connect(function() igPanel.Visible=false; ST.igOpen=false end)
+    igClose.MouseButton1Down:Connect(function()
+        igPanel.Visible = false; ST.igOpen = false
+    end)
 
     igBtn.MouseButton1Down:Connect(function()
         ST.igOpen = not ST.igOpen
         igPanel.Visible = ST.igOpen
-        if ST.igOpen then pcall(refreshIgnorePanel) end
+        if ST.igOpen then tdf(function() pcall(refreshIgnorePanel) end) end
     end)
 
+    -- ================================================================
     -- KEYS PANEL
+    -- ================================================================
     local setP = Instance.new("Frame")
-    setP.Name             = sn
-    setP.Size             = UDim2.new(0,350,0,400)
-    setP.Position         = UDim2.new(0,240,0,70)
+    setP.Name = sn; setP.Size = UDim2.new(0,350,0,400)
+    setP.Position = UDim2.new(0,240,0,70)
     setP.BackgroundColor3 = Color3.fromRGB(10,10,18)
-    setP.BackgroundTransparency = 0.08
-    setP.BorderSizePixel  = 0; setP.Active = true; setP.Draggable = true
-    setP.Visible          = false; setP.Parent = screenGui
+    setP.BackgroundTransparency = 0.08; setP.BorderSizePixel = 0
+    setP.Active = true; setP.Draggable = true
+    setP.Visible = false; setP.Parent = screenGui
     pcall(function()
         Instance.new("UICorner",setP).CornerRadius = UDim.new(0,10)
         local st = Instance.new("UIStroke",setP)
@@ -1209,79 +1335,82 @@ local function cg()
     GUI.setPanel = setP
 
     local spTitle = Instance.new("TextLabel")
-    spTitle.Size               = UDim2.new(1,0,0,28)
-    spTitle.BackgroundTransparency = 1
-    spTitle.Text               = "KEYS + FOV  (F5 = toggle)"
-    spTitle.TextColor3         = Color3.fromRGB(255,200,80)
-    spTitle.TextSize           = 12; spTitle.Font = Enum.Font.GothamBold
-    spTitle.Parent             = setP
+    spTitle.Size = UDim2.new(1,0,0,28); spTitle.BackgroundTransparency = 1
+    spTitle.Text = "KEYS + FOV  (F5 = toggle)"
+    spTitle.TextColor3 = Color3.fromRGB(255,200,80)
+    spTitle.TextSize = 12; spTitle.Font = Enum.Font.GothamBold; spTitle.Parent = setP
 
     local spAccent = Instance.new("Frame")
-    spAccent.Size             = UDim2.new(1,0,0,1)
-    spAccent.Position         = UDim2.new(0,0,0,28)
+    spAccent.Size = UDim2.new(1,0,0,1); spAccent.Position = UDim2.new(0,0,0,28)
     spAccent.BackgroundColor3 = Color3.fromRGB(0,160,255)
-    spAccent.BorderSizePixel  = 0; spAccent.Parent = setP
+    spAccent.BorderSizePixel = 0; spAccent.Parent = setP
 
+    local KB_BTNS = {}
     local binds = {
-        {l="Aimbot",  k="am"},{l="ESP",     k="es"},
-        {l="Silent",  k="sl"},{l="Trigger", k="tr"},
-        {l="Wall",    k="wc"},
+        {l="Aimbot",k="am"},{l="ESP",    k="es"},
+        {l="Silent", k="sl"},{l="Trigger",k="tr"},
+        {l="Wall",   k="wc"},
     }
     for i = 1, #binds do
         local bd = binds[i]; local ry = 36+(i-1)*34
-        local lbl = Instance.new("TextLabel")
-        lbl.Size               = UDim2.new(0,150,0,26); lbl.Position = UDim2.new(0,10,0,ry)
-        lbl.BackgroundTransparency = 1; lbl.Text = bd.l
-        lbl.TextColor3         = Color3.fromRGB(190,190,200)
-        lbl.TextSize           = 12; lbl.Font = Enum.Font.Gotham
-        lbl.TextXAlignment     = Enum.TextXAlignment.Left; lbl.Parent = setP
+        local lbl2 = Instance.new("TextLabel")
+        lbl2.Size = UDim2.new(0,150,0,26); lbl2.Position = UDim2.new(0,10,0,ry)
+        lbl2.BackgroundTransparency = 1; lbl2.Text = bd.l
+        lbl2.TextColor3 = Color3.fromRGB(190,190,200)
+        lbl2.TextSize = 12; lbl2.Font = Enum.Font.Gotham
+        lbl2.TextXAlignment = Enum.TextXAlignment.Left; lbl2.Parent = setP
+
         local kb = Instance.new("TextButton")
-        kb.Size             = UDim2.new(0,140,0,26); kb.Position = UDim2.new(0,175,0,ry)
+        kb.Size = UDim2.new(0,140,0,26); kb.Position = UDim2.new(0,175,0,ry)
         kb.BackgroundColor3 = Color3.fromRGB(20,20,40); kb.BackgroundTransparency = 0.2
-        kb.BorderSizePixel  = 0; kb.Text = S.KB[bd.k]
-        kb.TextColor3       = Color3.fromRGB(0,200,255)
-        kb.TextSize         = 12; kb.Font = Enum.Font.GothamBold; kb.Parent = setP
+        kb.BorderSizePixel = 0; kb.Text = S.KB[bd.k]
+        kb.TextColor3 = Color3.fromRGB(0,200,255)
+        kb.TextSize = 12; kb.Font = Enum.Font.GothamBold; kb.Parent = setP
         pcall(function() Instance.new("UICorner",kb).CornerRadius = UDim.new(0,5) end)
+
+        KB_BTNS[bd.k] = kb
         local bk = bd.k
         kb.MouseButton1Down:Connect(function()
             ST._rb = {btn=kb, key=bk, old=S.KB[bk]}
-            kb.Text = "..."; kb.TextColor3 = Color3.fromRGB(255,200,0)
+            kb.Text = "[ press key ]"
+            kb.TextColor3 = Color3.fromRGB(255,200,0)
         end)
     end
+    GUI.kbBtns = KB_BTNS
 
     local fixY = 36 + #binds*34 + 4
     local function fixedRow(label, keyName, ry)
-        local lbl = Instance.new("TextLabel")
-        lbl.Size               = UDim2.new(0,150,0,26); lbl.Position = UDim2.new(0,10,0,ry)
-        lbl.BackgroundTransparency = 1; lbl.Text = label
-        lbl.TextColor3         = Color3.fromRGB(160,160,170)
-        lbl.TextSize           = 11; lbl.Font = Enum.Font.Gotham
-        lbl.TextXAlignment     = Enum.TextXAlignment.Left; lbl.Parent = setP
+        local lbl2 = Instance.new("TextLabel")
+        lbl2.Size = UDim2.new(0,150,0,26); lbl2.Position = UDim2.new(0,10,0,ry)
+        lbl2.BackgroundTransparency = 1; lbl2.Text = label
+        lbl2.TextColor3 = Color3.fromRGB(160,160,170)
+        lbl2.TextSize = 11; lbl2.Font = Enum.Font.Gotham
+        lbl2.TextXAlignment = Enum.TextXAlignment.Left; lbl2.Parent = setP
         local val = Instance.new("TextLabel")
-        val.Size             = UDim2.new(0,140,0,26); val.Position = UDim2.new(0,175,0,ry)
+        val.Size = UDim2.new(0,140,0,26); val.Position = UDim2.new(0,175,0,ry)
         val.BackgroundColor3 = Color3.fromRGB(15,15,28); val.BackgroundTransparency = 0.2
-        val.BorderSizePixel  = 0; val.Text = keyName
-        val.TextColor3       = Color3.fromRGB(120,120,140)
-        val.TextSize         = 11; val.Font = Enum.Font.Gotham; val.Parent = setP
+        val.BorderSizePixel = 0; val.Text = keyName
+        val.TextColor3 = Color3.fromRGB(120,120,140)
+        val.TextSize = 11; val.Font = Enum.Font.Gotham; val.Parent = setP
         pcall(function() Instance.new("UICorner",val).CornerRadius = UDim.new(0,5) end)
     end
-    fixedRow("Keys Panel", "F5  (fixed)",  fixY)
-    fixedRow("Hide Menu",  "F7  (fixed)",  fixY+30)
+    fixedRow("Keys Panel","F5  (fixed)", fixY)
+    fixedRow("Hide Menu", "F7  (fixed)", fixY+30)
 
     local tcY = fixY + 66
     local tcLbl = Instance.new("TextLabel")
-    tcLbl.Size               = UDim2.new(0,150,0,26); tcLbl.Position = UDim2.new(0,10,0,tcY)
+    tcLbl.Size = UDim2.new(0,150,0,26); tcLbl.Position = UDim2.new(0,10,0,tcY)
     tcLbl.BackgroundTransparency = 1; tcLbl.Text = "Team Check"
-    tcLbl.TextColor3         = Color3.fromRGB(190,190,200)
-    tcLbl.TextSize           = 12; tcLbl.Font = Enum.Font.Gotham
-    tcLbl.TextXAlignment     = Enum.TextXAlignment.Left; tcLbl.Parent = setP
+    tcLbl.TextColor3 = Color3.fromRGB(190,190,200)
+    tcLbl.TextSize = 12; tcLbl.Font = Enum.Font.Gotham
+    tcLbl.TextXAlignment = Enum.TextXAlignment.Left; tcLbl.Parent = setP
     local tcBtn = Instance.new("TextButton")
-    tcBtn.Size             = UDim2.new(0,140,0,26); tcBtn.Position = UDim2.new(0,175,0,tcY)
+    tcBtn.Size = UDim2.new(0,140,0,26); tcBtn.Position = UDim2.new(0,175,0,tcY)
     tcBtn.BackgroundColor3 = S.AM.tc and Color3.fromRGB(30,70,30) or Color3.fromRGB(70,30,30)
     tcBtn.BackgroundTransparency = 0.2; tcBtn.BorderSizePixel = 0
-    tcBtn.Text             = S.AM.tc and "ON" or "OFF"
-    tcBtn.TextColor3       = Color3.fromRGB(255,255,255)
-    tcBtn.TextSize         = 12; tcBtn.Font = Enum.Font.GothamBold; tcBtn.Parent = setP
+    tcBtn.Text = S.AM.tc and "ON" or "OFF"
+    tcBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    tcBtn.TextSize = 12; tcBtn.Font = Enum.Font.GothamBold; tcBtn.Parent = setP
     pcall(function() Instance.new("UICorner",tcBtn).CornerRadius = UDim.new(0,5) end)
     tcBtn.MouseButton1Down:Connect(function()
         local nv = not S.AM.tc
@@ -1292,40 +1421,39 @@ local function cg()
 
     local slY = tcY + 34
     local fovLbl = Instance.new("TextLabel")
-    fovLbl.Size               = UDim2.new(0,330,0,20); fovLbl.Position = UDim2.new(0,10,0,slY)
+    fovLbl.Size = UDim2.new(0,330,0,20); fovLbl.Position = UDim2.new(0,10,0,slY)
     fovLbl.BackgroundTransparency = 1; fovLbl.Text = "FOV: " .. math.floor(S.FV.r)
-    fovLbl.TextColor3         = Color3.fromRGB(190,190,200)
-    fovLbl.TextSize           = 12; fovLbl.Font = Enum.Font.Gotham
-    fovLbl.TextXAlignment     = Enum.TextXAlignment.Left; fovLbl.Parent = setP
+    fovLbl.TextColor3 = Color3.fromRGB(190,190,200)
+    fovLbl.TextSize = 12; fovLbl.Font = Enum.Font.Gotham
+    fovLbl.TextXAlignment = Enum.TextXAlignment.Left; fovLbl.Parent = setP
 
     local sBg = Instance.new("Frame")
-    sBg.Size             = UDim2.new(0,330,0,6); sBg.Position = UDim2.new(0,10,0,slY+22)
+    sBg.Size = UDim2.new(0,330,0,6); sBg.Position = UDim2.new(0,10,0,slY+22)
     sBg.BackgroundColor3 = Color3.fromRGB(30,30,50); sBg.BorderSizePixel = 0; sBg.Parent = setP
     pcall(function() Instance.new("UICorner",sBg).CornerRadius = UDim.new(0,3) end)
 
     local sFill = Instance.new("Frame")
-    sFill.Size             = UDim2.new(S.FV.r/500,0,1,0)
+    sFill.Size = UDim2.new(S.FV.r/500,0,1,0)
     sFill.BackgroundColor3 = Color3.fromRGB(0,180,255)
-    sFill.BorderSizePixel  = 0; sFill.Parent = sBg
+    sFill.BorderSizePixel = 0; sFill.Parent = sBg
     pcall(function() Instance.new("UICorner",sFill).CornerRadius = UDim.new(0,3) end)
 
     local sBtn = Instance.new("TextButton")
-    sBtn.Size             = UDim2.new(0,16,0,16)
-    sBtn.Position         = UDim2.new(S.FV.r/500,-8,0,-5)
+    sBtn.Size = UDim2.new(0,16,0,16); sBtn.Position = UDim2.new(S.FV.r/500,-8,0,-5)
     sBtn.BackgroundColor3 = Color3.fromRGB(0,200,255)
-    sBtn.BorderSizePixel  = 0; sBtn.Text = ""; sBtn.Parent = sBg
+    sBtn.BorderSizePixel = 0; sBtn.Text = ""; sBtn.Parent = sBg
     pcall(function() Instance.new("UICorner",sBtn).CornerRadius = UDim.new(0,8) end)
 
     local cY2 = slY + 40
     local cBtn = Instance.new("TextButton")
-    cBtn.Size             = UDim2.new(0,130,0,24); cBtn.Position = UDim2.new(0,10,0,cY2)
+    cBtn.Size = UDim2.new(0,130,0,24); cBtn.Position = UDim2.new(0,10,0,cY2)
     cBtn.BackgroundColor3 = S.FV.c; cBtn.BorderSizePixel = 0
-    cBtn.Text             = "FOV COLOR"; cBtn.TextColor3 = Color3.fromRGB(255,255,255)
-    cBtn.TextSize         = 10; cBtn.Font = Enum.Font.GothamBold; cBtn.Parent = setP
+    cBtn.Text = "FOV COLOR"; cBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    cBtn.TextSize = 10; cBtn.Font = Enum.Font.GothamBold; cBtn.Parent = setP
     pcall(function() Instance.new("UICorner",cBtn).CornerRadius = UDim.new(0,5) end)
     local cols = {
-        Color3.fromRGB(255,255,255), Color3.fromRGB(0,200,255),
-        Color3.fromRGB(255,60,60),   Color3.fromRGB(60,255,60),
+        Color3.fromRGB(255,255,255),Color3.fromRGB(0,200,255),
+        Color3.fromRGB(255,60,60),  Color3.fromRGB(60,255,60),
         Color3.fromRGB(255,200,0),
     }
     local ci = 1
@@ -1336,18 +1464,19 @@ local function cg()
     end)
 
     local clBtn = Instance.new("TextButton")
-    clBtn.Size             = UDim2.new(0,80,0,24)
-    clBtn.Position         = UDim2.new(0.5,-40,0,setP.Size.Y.Offset-30)
+    clBtn.Size = UDim2.new(0,80,0,24)
+    clBtn.Position = UDim2.new(0.5,-40,0,setP.Size.Y.Offset-30)
     clBtn.BackgroundColor3 = Color3.fromRGB(60,20,20); clBtn.BackgroundTransparency = 0.2
-    clBtn.BorderSizePixel  = 0; clBtn.Text = "CLOSE"
-    clBtn.TextColor3       = Color3.fromRGB(255,140,140)
-    clBtn.TextSize         = 11; clBtn.Font = Enum.Font.GothamBold; clBtn.Parent = setP
+    clBtn.BorderSizePixel = 0; clBtn.Text = "CLOSE"
+    clBtn.TextColor3 = Color3.fromRGB(255,140,140)
+    clBtn.TextSize = 11; clBtn.Font = Enum.Font.GothamBold; clBtn.Parent = setP
     pcall(function() Instance.new("UICorner",clBtn).CornerRadius = UDim.new(0,5) end)
     clBtn.MouseButton1Down:Connect(function() toggleKeysPanel() end)
     setBtn.MouseButton1Down:Connect(function()  toggleKeysPanel() end)
 
     SI = {sBg=sBg, sBtn=sBtn, sFill=sFill, fovLbl=fovLbl, dragging=false}
     sBtn.MouseButton1Down:Connect(function() SI.dragging = true end)
+    sBg.MouseLeave:Connect(function() SI.dragging = false end)
 end
 
 -- ============================================================
@@ -1355,26 +1484,31 @@ end
 -- ============================================================
 local okIn, errIn = pcall(function()
     hook(UI.InputBegan:Connect(function(inp, gpd)
+
         if UI:GetFocusedTextBox() then return end
 
+        -- Rebind capture
         if ST._rb then
             if isMouseBtn(inp) then
                 if inp.UserInputType == Enum.UserInputType.MouseButton2 then
-                    S.KB[ST._rb.key] = "MouseButton2"
-                    ST._rb.btn.Text = "MouseButton2"
+                    local nn = "MouseButton2"
+                    S.KB[ST._rb.key]      = nn
+                    ST._rb.btn.Text       = nn
                     ST._rb.btn.TextColor3 = Color3.fromRGB(0,200,255)
+                    if GUI.kbBtns and GUI.kbBtns[ST._rb.key] then
+                        GUI.kbBtns[ST._rb.key].Text = nn
+                    end
                     ST._rb = nil
                 end
                 return
             end
-            if inp.KeyCode == Enum.KeyCode.F5
-            or inp.KeyCode == Enum.KeyCode.F7 then
-                ST._rb.btn.Text = ST._rb.old
+            if inp.KeyCode == Enum.KeyCode.F5 or inp.KeyCode == Enum.KeyCode.F7 then
+                ST._rb.btn.Text       = ST._rb.old
                 ST._rb.btn.TextColor3 = Color3.fromRGB(0,200,255)
                 ST._rb = nil; return
             end
             if inp.KeyCode == Enum.KeyCode.Escape then
-                ST._rb.btn.Text = ST._rb.old
+                ST._rb.btn.Text       = ST._rb.old
                 ST._rb.btn.TextColor3 = Color3.fromRGB(0,200,255)
                 ST._rb = nil; return
             end
@@ -1385,17 +1519,20 @@ local okIn, errIn = pcall(function()
                 nn = EN[inp.UserInputType] or tostring(inp.UserInputType):gsub("Enum.UserInputType.","")
             end
             if nn then
-                S.KB[ST._rb.key] = nn
-                ST._rb.btn.Text = nn
+                S.KB[ST._rb.key]      = nn
+                ST._rb.btn.Text       = nn
                 ST._rb.btn.TextColor3 = Color3.fromRGB(0,200,255)
+                if GUI.kbBtns and GUI.kbBtns[ST._rb.key] then
+                    GUI.kbBtns[ST._rb.key].Text = nn
+                end
                 ST._rb = nil
             end
             return
         end
 
+        -- RMB arm  (even when gpd=true)
         if inp.UserInputType == Enum.UserInputType.MouseButton2 then
-            ST.arm   = true
-            ST.saArm = true
+            ST.arm = true; ST.saArm = true
             if holdToAimEnabled then S.AM.on = true end
         end
 
@@ -1403,11 +1540,19 @@ local okIn, errIn = pcall(function()
             ST.saArm = true
         end
 
+        -- F7: toggle menu only, FOV unaffected
         if inp.KeyCode == Enum.KeyCode.F7 then
             if GUI.main then
                 local nv = not GUI.main.Visible
-                setMenuVisible(nv)
-                if not nv and S.AC.hi then destroyAllInstanceESP() end
+                GUI.main.Visible = nv
+                ST.hid = not nv
+                if GUI.restoreBar then GUI.restoreBar.Visible = not nv end
+                if not nv then
+                    if GUI.igPanel  then GUI.igPanel.Visible  = false end
+                    if GUI.setPanel then GUI.setPanel.Visible = false end
+                    ST.mn = false; ST.igOpen = false
+                    SI.dragging = false; ST._rb = nil
+                end
             end
             return
         end
@@ -1418,52 +1563,39 @@ local okIn, errIn = pcall(function()
 
         if gpd then return end
 
-        local function updBtn(name, state, onC, offC)
-            if not GUI.main then return end
-            for _, v in ipairs(GUI.main:GetChildren()) do
-                if v:IsA("Frame") then
-                    for _, pill in ipairs(v:GetChildren()) do
-                        if pill:IsA("TextButton") then
-                            local lbl = v:FindFirstChildOfClass("TextLabel")
-                            if lbl and lbl.Text == name then
-                                pill.BackgroundColor3 = state and onC or offC
-                                pill.Text = state and "ON" or "OFF"
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
+        -- Feature key toggles
         if mk(inp,"am") then
             S.AM.on = not S.AM.on
-            if not S.AM.on then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999 end
-            updBtn("AIMBOT",     S.AM.on, Color3.fromRGB(30,180,60), Color3.fromRGB(200,40,40))
+            if not S.AM.on then flushTarget() end
+            updBtn("AIMBOT",    S.AM.on, C_GRN, C_RED)
         end
         if mk(inp,"es") then
             S.ES.on = not S.ES.on
             if not S.ES.on then destroyAllInstanceESP() end
-            updBtn("ESP",        S.ES.on, Color3.fromRGB(30,180,60), Color3.fromRGB(200,40,40))
+            updBtn("ESP",       S.ES.on, C_GRN, C_RED)
         end
         if mk(inp,"sl") then
             S.SL.on = not S.SL.on
-            updBtn("SILENT",     S.SL.on, Color3.fromRGB(30,180,60), Color3.fromRGB(210,110,0))
+            updBtn("SILENT",    S.SL.on, C_GRN, C_ORG)
         end
         if mk(inp,"tr") then
             S.TR.on = not S.TR.on
-            updBtn("TRIGGER",    S.TR.on, Color3.fromRGB(30,180,60), Color3.fromRGB(200,40,40))
+            updBtn("TRIGGER",   S.TR.on, C_GRN, C_RED)
         end
         if mk(inp,"wc") then
-            local nv=not S.AM.wc; S.AM.wc=nv; S.SL.wc=nv; S.TR.wc=nv
-            updBtn("WALL CHECK", nv,      Color3.fromRGB(30,180,60), Color3.fromRGB(210,110,0))
+            local nv = not S.AM.wc; S.AM.wc=nv; S.SL.wc=nv; S.TR.wc=nv
+            updBtn("WALL CHECK",nv,      C_GRN, C_ORG)
         end
     end))
 
     hook(UI.InputEnded:Connect(function(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton2 then
-            ST.arm   = false
-            ST.saArm = false
-            if holdToAimEnabled then S.AM.on = false end
+            ST.arm = false; ST.saArm = false
+            if holdToAimEnabled then
+                ST.holdReleased = true
+                S.AM.on = false
+                flushTarget()
+            end
         end
         if inp.UserInputType == Enum.UserInputType.MouseButton1 then
             tsp(function() tw(0.05); ST.saArm = false end)
@@ -1489,7 +1621,7 @@ if MOB then
         local function mt(l, y, gs, fn, armSA)
             local b = Instance.new("TextButton")
             b.Size=UDim2.new(0,50,0,50); b.Position=UDim2.new(0,0,0,y)
-            b.BackgroundColor3 = gs() and Color3.fromRGB(30,180,60) or Color3.fromRGB(200,40,40)
+            b.BackgroundColor3 = gs() and C_GRN or C_RED
             b.BackgroundTransparency=0.15; b.BorderSizePixel=0
             b.Text=l:sub(1,2); b.TextColor3=Color3.fromRGB(255,255,255)
             b.TextSize=11; b.Font=Enum.Font.GothamBold; b.Parent=tf
@@ -1497,11 +1629,11 @@ if MOB then
             b.MouseButton1Down:Connect(function()
                 fn()
                 if armSA then ST.arm=true; ST.saArm=true end
-                b.BackgroundColor3 = gs() and Color3.fromRGB(30,180,60) or Color3.fromRGB(200,40,40)
+                b.BackgroundColor3 = gs() and C_GRN or C_RED
             end)
         end
         mt("AM",5,  function() return S.AM.on end,
-            function() S.AM.on=not S.AM.on; if not S.AM.on then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999 end end)
+            function() S.AM.on=not S.AM.on; if not S.AM.on then flushTarget() end end)
         mt("ES",60, function() return S.ES.on end,
             function() S.ES.on=not S.ES.on; if not S.ES.on then destroyAllInstanceESP() end end)
         mt("SL",115,function() return S.SL.on end,
@@ -1527,22 +1659,46 @@ local okLoop, errLoop = pcall(function()
         if not ST.ld then conn:Disconnect(); return end
         ST.fr = (ST.fr or 0) + 1
 
+        -- FPS counter (color-coded)
+        pcall(function()
+            FPS_COUNT = FPS_COUNT + 1
+            local now = os.clock()
+            local elapsed = now - FPS_TIMER
+            if elapsed >= FPS_INTERVAL then
+                FPS_SHOWN = math.floor(FPS_COUNT / elapsed + 0.5)
+                FPS_COUNT = 0
+                FPS_TIMER = now
+                if GUI.titleLabel then
+                    GUI.titleLabel.Text = "OPSYX v9.27  |  " .. FPS_SHOWN .. " FPS"
+                    if FPS_SHOWN >= 60 then
+                        GUI.titleLabel.TextColor3 = Color3.fromRGB(0,220,100)
+                    elseif FPS_SHOWN >= 30 then
+                        GUI.titleLabel.TextColor3 = Color3.fromRGB(255,180,0)
+                    else
+                        GUI.titleLabel.TextColor3 = Color3.fromRGB(255,60,60)
+                    end
+                end
+            end
+        end)
+
+        -- FOV circle (independent of menu visibility)
         pcall(function()
             if not FC then return end
             local show = S.FV.on
-            local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
             if show then
-                FC.Position    = Vector2.new(mx, my)
-                FC.Radius      = S.FV.r
-                FC.Color       = S.FV.c
-                FC.Thickness   = S.FV.th
-                FC.NumSides    = 48
-                FC.Filled      = S.FV.fl
+                local mx, my = UI:GetMouseLocation().X, UI:GetMouseLocation().Y
+                FC.Position     = Vector2.new(mx, my)
+                FC.Radius       = S.FV.r
+                FC.Color        = S.FV.c
+                FC.Thickness    = S.FV.th
+                FC.NumSides     = 64
+                FC.Filled       = S.FV.fl
                 FC.Transparency = S.FV.tr
             end
             FC.Visible = show
         end)
 
+        -- Lock tag
         pcall(function()
             if not FTL then return end
             local show = S.AM.on and S.FV.on and ST.tgpl ~= nil
@@ -1554,14 +1710,15 @@ local okLoop, errLoop = pcall(function()
             FTL.Visible = show
         end)
 
+        -- FOV slider drag
         pcall(function()
             if SI.dragging and SI.sBg then
-                local mx  = UI:GetMouseLocation().X
-                local ax  = SI.sBg.AbsolutePosition.X
-                local aw  = SI.sBg.AbsoluteSize.X
-                local pc  = cl((mx-ax)/aw, 0, 1)
-                local r   = math.floor(pc * 500)
-                S.FV.r    = r
+                local mx = UI:GetMouseLocation().X
+                local ax = SI.sBg.AbsolutePosition.X
+                local aw = SI.sBg.AbsoluteSize.X
+                local pc = cl((mx-ax)/aw, 0, 1)
+                local r  = math.floor(pc * 500)
+                S.FV.r   = r
                 SI.sBtn.Position = UDim2.new(pc,-8,0,-5)
                 SI.sFill.Size    = UDim2.new(pc,0,1,0)
                 SI.fovLbl.Text   = "FOV: " .. r
@@ -1569,21 +1726,36 @@ local okLoop, errLoop = pcall(function()
             end
         end)
 
+        -- [FIX-IG4] Live auto-refresh ignore panel every 0.25s
+        pcall(function()
+            if ST.igOpen and GUI.igPanel and GUI.igPanel.Visible then
+                local now = os.clock()
+                if now - ST.igLastRefresh >= 0.25 then
+                    ST.igLastRefresh = now
+                    pcall(refreshIgnorePanel)
+                end
+            end
+        end)
+
+        -- ESP update (throttled ~5-10 hz)
         local nowT = os.clock()
         if nowT - ST.espT > 0.1 + RNG:NextNumber(0,0.1) then
             ST.espT = nowT
             if ST.stealth and nowT - ST.killT > 20 then ST.stealth = false end
             pcall(function()
                 local charsChanged = false
+                local changedChars = {}
                 local rngL = (ST.stealth and S.AC.cl) and S.ES.sd or S.ES.md
                 for _, pl in ipairs(Players:GetPlayers()) do
                     if pl ~= ME then
                         local c    = pl.Character
                         local prev = CHARS[pl]
                         if prev ~= c then
-                            if prev then PART_CACHE[prev] = nil end
-                            CHARS[pl]    = c
-                            charsChanged = true
+                            if prev then
+                                PART_CACHE[prev] = nil
+                                changedChars[#changedChars+1] = prev
+                            end
+                            CHARS[pl] = c; charsChanged = true
                         end
                         if not S.ES.on then
                             if IESP[pl] then destroyInstanceESP(pl) end
@@ -1591,8 +1763,8 @@ local okLoop, errLoop = pcall(function()
                             if c and al(c) then
                                 local cam = CAM()
                                 local rt  = fr(c)
-                                if cam and rt
-                                and (cam.CFrame.Position-rt.Position).Magnitude <= rngL then
+                                if cam and rt and
+                                (cam.CFrame.Position-rt.Position).Magnitude <= rngL then
                                     local esp = IESP[pl]
                                     if esp == nil then
                                         createInstanceESP(pl)
@@ -1602,8 +1774,7 @@ local okLoop, errLoop = pcall(function()
                                         if esp.highlight.Parent==nil or esp.billboard.Parent==nil then
                                             IESP[pl] = nil
                                             local k = nowT
-                                            if k-ST.killT < 8 then ST.kills=ST.kills+1
-                                            else ST.kills=1 end
+                                            if k-ST.killT < 8 then ST.kills=ST.kills+1 else ST.kills=1 end
                                             ST.killT = k
                                             if ST.kills >= 3 then ST.stealth=true; ST.kills=0 end
                                             createInstanceESP(pl)
@@ -1611,19 +1782,16 @@ local okLoop, errLoop = pcall(function()
                                             esp.highlight.FillColor = isEnemy(pl) and S.ES.ce or S.ES.ct
                                             if esp.txt2 then
                                                 local hum = c:FindFirstChildOfClass("Humanoid")
-                                                local dd  = math.floor((cam.CFrame.Position-rt.Position).Magnitude)
+                                                local dd  = safeFloor((cam.CFrame.Position-rt.Position).Magnitude,0)
                                                 local hp  = "?"
                                                 if hum then
                                                     local hv = hum.Health
-                                                    if hv == hv and hv >= 0 then
-                                                        hp = tostring(math.floor(hv+0.5))
-                                                    end
+                                                    if hv==hv and hv>=0 then hp=tostring(safeFloor(hv,0)) end
                                                 end
                                                 esp.txt2.Text = hp.." HP | "..dd.."m"
+                                                esp.txt2.TextColor3 = hpColor(hum)
                                             end
-                                            if S.AC.nm and nowT-esp.ren > S.AC.rg then
-                                                renameESP(pl)
-                                            end
+                                            if S.AC.nm and nowT-esp.ren > S.AC.rg then renameESP(pl) end
                                         end
                                     end
                                 else
@@ -1635,7 +1803,9 @@ local okLoop, errLoop = pcall(function()
                         end
                     end
                 end
-                if charsChanged then clearPartCache() end
+                if charsChanged then
+                    for i = 1, #changedChars do clearLOSCForChar(changedChars[i]) end
+                end
             end)
         end
 
@@ -1657,21 +1827,28 @@ local function oca(plr)
         tsp(function()
             tw(0.5)
             destroyInstanceESP(plr)
-            LP[plr]    = nil
-            CHARS[plr] = nil
-            if ST.tgpl == plr then
-                ST.tg = nil; ST.tgpl = nil; ST.tgDist = 999
-            end
+            LP[plr]=nil; CHARS[plr]=nil
+            if ST.tgpl == plr then flushTarget() end
         end)
     end))
 end
+
+hook(ME.CharacterAdded:Connect(function()
+    tsp(function()
+        tw(0.3)
+        ST.arm=false; ST.saArm=false; ST.holdReleased=false
+        if holdToAimEnabled then S.AM.on = false end
+        flushTarget(); reapplyFPS()
+    end)
+end))
+
 for _, pl in ipairs(Players:GetPlayers()) do oca(pl) end
 hook(Players.PlayerAdded:Connect(oca))
 
 hook(Players.PlayerRemoving:Connect(function(pl)
     destroyInstanceESP(pl)
     LP[pl]=nil; IGNORE[pl]=nil; CHARS[pl]=nil
-    if ST.tgpl == pl then ST.tg=nil; ST.tgpl=nil; ST.tgDist=999 end
+    if ST.tgpl == pl then flushTarget() end
     if GUI.igPanel and GUI.igPanel.Visible then pcall(refreshIgnorePanel) end
 end))
 
@@ -1680,6 +1857,7 @@ end))
 -- ============================================================
 function _G.__V94OPSYX_CL()
     ST.ld=false; ST.hid=false; ST.stealth=false; ST.kills=0
+    ST.arm=false; ST.saArm=false; ST.holdReleased=false
     destroyAllInstanceESP()
     if FC  then pcall(function() FC:Remove()  end) end
     if FTL then pcall(function() FTL:Remove() end) end
@@ -1688,25 +1866,25 @@ function _G.__V94OPSYX_CL()
     if ST.ourGuis then
         for i = 1, #ST.ourGuis do pcall(function() ST.ourGuis[i]:Destroy() end) end
     end
-    for pl in pairs(LP)    do LP[pl]    = nil end
-    for pl in pairs(CHARS) do CHARS[pl] = nil end
-    clearPartCache()
-    ST.tg=nil; ST.tgpl=nil; ST.tgDist=999
+    for pl in pairs(LP)    do LP[pl]=nil    end
+    for pl in pairs(CHARS) do CHARS[pl]=nil end
+    clearPartCache(); flushTarget()
     _G.__V94OPSYX_LD=nil; _G.__V94OPSYX_CL=nil
 end
 
 print(string.rep("=", 60))
-print("  V9.22 OPSYX  |  sUNC 100% / UNC 98-99%")
-print("  [FIX-N] FOV circle now stays visible when menu is hidden")
-print("  [FIX-K] WEBHOOK_SKIP_IDS restored (was cleared in paste)")
-print("  [FIX-L] syn wrapped in pcall - no crash on non-syn executors")
-print("  [FIX-M] Skip gate corrected - random 2% per frame, min 0.8s gap")
-print("  [FIX-E..J] All V9.20 aimbot fixes retained")
-print("  [FIX-A..D] All V9.19 aimbot fixes retained")
-print("  [FIX-IG]   Ignore list toggle fix retained")
-print("  [FIX-1..9] All V9.18 fixes retained")
-print("  LOCK_MARGIN = 45px")
+print("  V9.27 OPSYX  |  sUNC 100% / UNC 98-99%  |  NO WEBHOOK")
+print("  [CLEAN]   Webhook removed - zero data sent anywhere")
+print("  [FIX-IG1] Ignore list sorted nearest-first by default")
+print("  [FIX-IG2] Sort toggle button: NEAR <-> A-Z in panel")
+print("  [FIX-IG3] Distance badge on every player row (color-coded)")
+print("  [FIX-IG4] Auto-refresh every 0.25s while panel is open")
+print("  [IMPROVE] Status bar: player count + ignored count")
+print("  [IMPROVE] CLEAR button wipes all ignores at once")
+print("  [IMPROVE] Row hover highlight, ClipsDescendants on list")
+print("  Distance colors: green<50m  yellow<150m  red=far  gray=?")
+print("  All V9.26 + V9.25 fixes retained")
 print("  F1=Aimbot | F2=ESP | F3=Silent | F4=Trigger | F6=Wall")
-print("  F5=KEYS panel  |  F7=Hide menu  |  RMB=Arm")
+print("  F5=KEYS  |  F7=Hide Menu (FOV stays ON)  |  RMB=Arm")
 print("  UNLOAD: _G.__V94OPSYX_CL()")
 print(string.rep("=", 60))
